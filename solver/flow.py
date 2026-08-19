@@ -31,9 +31,10 @@ def set_active_page(page):
     _active_page = page
 
 
-# Chromium flags for Docker/Linux on Xvfb (:99). 2GB RAM — no memory hacks.
+PROXY_URL = os.getenv("PROXY_URL", "http://ctkbsyqq-rotate:otnwcuj43j81@p.webshare.io:80")
+
+# Chromium flags for Docker/Linux on Xvfb (:99). 2GB RAM.
 # headless=False → Chromium runs on Xvfb virtual display (DISPLAY=:99 in Dockerfile).
-# This avoids the --headless=new flag which Cloudflare Turnstile detects as bot.
 # nodriver auto-adds: --no-sandbox (root), --remote-debugging-port, CDP flags.
 _CHROMIUM_ARGS = [
     "--no-zygote",
@@ -44,6 +45,7 @@ _CHROMIUM_ARGS = [
     "--hide-scrollbars",
     "--mute-audio",
     "--disable-blink-features=AutomationControlled",
+    f"--proxy-server={PROXY_URL}",
 ]
 
 _CHROME_PATHS = [
