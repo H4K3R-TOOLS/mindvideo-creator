@@ -26,13 +26,17 @@ def set_active_page(page):
     global _active_page
     _active_page = page
 
-# Minimal args — nodriver adds its own; we just ensure shm and gpu flags.
-# headless=False: Chromium renders to Xvfb virtual display (:99) set in Dockerfile.
-# nodriver auto-detects root and disables sandbox automatically.
+# Force old-style --headless (no =new suffix) directly as a browser arg.
+# nodriver headless=False means it won't inject --headless=new itself.
+# Old --headless doesn't need X11 and has no CDP port timing bugs unlike --headless=new.
+# nodriver auto-detects root and adds --no-sandbox automatically.
 _CHROMIUM_ARGS = [
+    "--headless",                  # old headless mode — stable CDP bind, no X11 needed
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--window-size=1280,800",
+    "--hide-scrollbars",
+    "--mute-audio",
 ]
 
 CHROME_PATHS = [
@@ -58,8 +62,8 @@ async def _save_screen(tab):
 async def create_account_browser(index: int) -> dict:
     """
     Automates the full registration on mindvideo.ai/auth/signup/ using nodriver.
-    Runs headless=False with Xvfb virtual display (:99) in the Docker container.
-    nodriver auto-detects root and disables Chrome sandbox internally.
+    Uses old-style --headless flag (injected via browser_args) so nodriver doesn't
+    add --headless=new, which has a known CDP connection timing bug on Debian Chromium.
     """
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
@@ -71,7 +75,7 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=False,          # uses Xvfb :99 display — avoids --headless=new CDP timing bugs
+        headless=False,            # prevents nodriver from injecting --headless=new
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
