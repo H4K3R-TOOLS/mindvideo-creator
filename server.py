@@ -158,7 +158,7 @@ function connectStream() {
 }
 connectStream();
 
-// Auto-refresh live screenshot
+// Fast auto-refresh live screenshot (400ms for smooth live preview)
 setInterval(() => {
   const img = document.getElementById('live-screen');
   const noScreen = document.getElementById('no-screen');
@@ -168,10 +168,10 @@ setInterval(() => {
     img.src = src;
     img.style.display = 'inline-block';
     noScreen.style.display = 'none';
-    document.getElementById('screen-ts').textContent = '● updating';
+    document.getElementById('screen-ts').textContent = '● live';
   };
   newImg.src = src;
-}, 1500);
+}, 400);
 
 async function pollHealth() {
   try {

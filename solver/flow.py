@@ -1,7 +1,6 @@
 # Python 3.11 | solver/flow.py
-# Full End-to-End Automated Browser Registration Flow with Live Screenshot Streaming
-# Step 0: Fill email, nickname, password -> Click Continue -> Turnstile widget appears -> Click Turnstile -> send-mail-code (200 OK)
-# Step 1: Mail.tm OTP read -> Input OTP -> Submit -> Account created!
+# Full End-to-End Automated Browser Registration Flow
+# Real-time screenshot streaming + Humanized cursor movement & WebGL/Media fixes for Turnstile
 
 import asyncio
 import logging
@@ -21,10 +20,11 @@ SCREENSHOT_PATH = os.path.join(BASE_DIR, "screenshot.png")
 _CHROMIUM_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--disable-setuid-sandbox",
-    "--disable-gpu",
-    "--disable-software-rasterizer",
     "--disable-blink-features=AutomationControlled",
+    "--enable-webgl",
+    "--use-gl=swiftshader",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--window-size=1280,800",
 ]
 
 USER_AGENT = (
@@ -33,11 +33,9 @@ USER_AGENT = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-async def _save_screen(page, name=""):
+async def _save_screen(page):
     try:
         await page.screenshot(path=SCREENSHOT_PATH)
-        if name:
-            logger.debug(f"Saved screenshot: {name}")
     except Exception:
         pass
 
@@ -61,12 +59,11 @@ async def create_account_browser(index: int) -> dict:
             user_agent=USER_AGENT,
             locale="en-US",
             viewport={"width": 1280, "height": 800},
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
         )
         page = await context.new_page()
-
-        # Pipe browser console & page errors for live monitoring
-        page.on("console", lambda msg: logger.info(f"[{index} Console] {msg.text}"))
-        page.on("pageerror", lambda err: logger.error(f"[{index} PageError] {err}"))
 
         # Track network responses for send-mail-code and register
         send_mail_result = {"status": None, "body": None}
@@ -84,49 +81,44 @@ async def create_account_browser(index: int) -> dict:
 
         logger.info(f"[{index}] Navigating to {SIGNUP_URL}...")
         await page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=45000)
-        await asyncio.sleep(2)
-        await _save_screen(page, "page_loaded")
+        await _save_screen(page)
 
         # ── Step 0: Fill ALL 3 required fields (email, nickname, password) ────
         logger.info(f"[{index}] Filling Step 0 fields...")
         
-        # 1. Email
         email_input = page.locator("input#email, input[placeholder*='email' i]").first
         await email_input.wait_for(state="visible", timeout=15000)
         await email_input.click()
-        await email_input.type(email, delay=30)
-        await asyncio.sleep(0.3)
+        await email_input.type(email, delay=15)
+        await _save_screen(page)
 
-        # 2. Nickname
         nick_input = page.locator("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]").first
         await nick_input.wait_for(state="visible", timeout=10000)
         await nick_input.click()
-        await nick_input.type(nickname, delay=30)
-        await asyncio.sleep(0.3)
+        await nick_input.type(nickname, delay=15)
+        await _save_screen(page)
 
-        # 3. Password
         pass_input = page.locator("input#password, input[type='password']").first
         await pass_input.wait_for(state="visible", timeout=10000)
         await pass_input.click()
-        await pass_input.type(password, delay=30)
+        await pass_input.type(password, delay=15)
         await page.keyboard.press("Tab")
-        await asyncio.sleep(0.5)
-        await _save_screen(page, "fields_filled")
+        await _save_screen(page)
 
-        # 4. Click Continue submit button
+        # Click Continue submit button
         logger.info(f"[{index}] Submitting Step 0 form...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
         await submit_btn.click()
-        await asyncio.sleep(1.0)
-        await _save_screen(page, "continue_clicked")
+        await asyncio.sleep(0.5)
+        await _save_screen(page)
 
         # ── Solve Turnstile Widget ────────────────────────────────────────────
         logger.info(f"[{index}] Waiting for Turnstile widget to appear & solve...")
         turnstile_passed = False
 
-        for attempt in range(40):
-            await asyncio.sleep(1.0)
-            await _save_screen(page, f"turnstile_wait_{attempt+1}")
+        for attempt in range(50):
+            await asyncio.sleep(0.8)
+            await _save_screen(page)
 
             # Check if send-mail-code succeeded (200 OK)
             if send_mail_result["status"] == 200:
@@ -141,27 +133,35 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # Find Turnstile iframe and simulate real mouse click on checkbox
+            # 1. Target Turnstile iframe using frame_locator
             try:
-                iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com'], iframe[src*='cloudflare'], iframe")
+                frame = page.frame_locator("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']")
+                checkbox = frame.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
+                if await checkbox.count() > 0:
+                    await checkbox.click(timeout=1000, force=True)
+                    logger.info(f"[{index}] Clicked Turnstile checkbox inside frame [attempt {attempt+1}]")
+            except Exception:
+                pass
+
+            # 2. Also simulate real human mouse cursor path to the checkbox
+            try:
+                iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']")
                 if iframe_handle:
                     box = await iframe_handle.bounding_box()
                     if box and box["width"] > 0 and box["height"] > 0:
-                        click_x = box["x"] + 30
-                        click_y = box["y"] + box["height"] / 2
-                        await page.mouse.click(click_x, click_y)
-                        logger.info(f"[{index}] Mouse clicked Turnstile at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
-                
-                # Also try locator click inside iframe
-                fl = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
-                body = fl.locator("body, #challenge-stage, .ctp-checkbox-label, input[type='checkbox']").first
-                if await body.count() > 0:
-                    await body.click(timeout=1000)
-            except Exception as e:
-                logger.debug(f"Click attempt error: {e}")
+                        target_x = box["x"] + 28
+                        target_y = box["y"] + box["height"] / 2
+                        # Move mouse smoothly in steps
+                        await page.mouse.move(target_x, target_y, steps=8)
+                        await page.mouse.down()
+                        await asyncio.sleep(0.08)
+                        await page.mouse.up()
+                        logger.info(f"[{index}] Mouse moved & clicked checkbox at ({int(target_x)}, {int(target_y)})")
+            except Exception:
+                pass
 
         if not turnstile_passed:
-            await _save_screen(page, "turnstile_timeout")
+            await _save_screen(page)
             raise RuntimeError(f"Turnstile did not complete. send-mail-code: {send_mail_result}")
 
         # ── Step 1: Read OTP from mail.tm and enter verification code ─────────
@@ -174,18 +174,18 @@ async def create_account_browser(index: int) -> dict:
         code_input = page.locator("input#verificationCode, input[placeholder*='code' i], input[placeholder*='verification' i]").first
         await code_input.wait_for(state="visible", timeout=10000)
         await code_input.click()
-        await code_input.type(otp_code, delay=35)
-        await asyncio.sleep(0.5)
-        await _save_screen(page, "otp_entered")
+        await code_input.type(otp_code, delay=20)
+        await _save_screen(page)
+        await asyncio.sleep(0.3)
 
         # Submit final Step 1 (Register)
         logger.info(f"[{index}] Submitting final registration...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
         await submit_btn.click()
 
-        # Wait 3 seconds for registration request to complete
-        await asyncio.sleep(3.0)
-        await _save_screen(page, "registration_complete")
+        # Wait 2.5 seconds for registration request to complete
+        await asyncio.sleep(2.5)
+        await _save_screen(page)
         logger.info(f"[{index}] ✅ Registration successfully completed for: {email}")
 
         await browser.close()
