@@ -58,4 +58,4 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 8000
 
 # Start Xvfb background display and start server
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -ac & export DISPLAY=:99 && python server.py"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -ac & sleep 1 && export DISPLAY=:99 && python server.py"]

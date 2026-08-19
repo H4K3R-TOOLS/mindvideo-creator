@@ -13,7 +13,6 @@ from email_service import mailtm
 logger = logging.getLogger(__name__)
 
 SIGNUP_URL = "https://www.mindvideo.ai/auth/signup/"
-HEADLESS   = os.getenv("HEADLESS", "true").lower() == "true"
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCREENSHOT_PATH = os.path.join(BASE_DIR, "screenshot.png")
 
@@ -27,8 +26,10 @@ def set_active_page(page):
     global _active_page
     _active_page = page
 
+# Minimal args — nodriver adds its own; we just ensure shm and gpu flags.
+# headless=False: Chromium renders to Xvfb virtual display (:99) set in Dockerfile.
+# nodriver auto-detects root and disables sandbox automatically.
 _CHROMIUM_ARGS = [
-    "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--window-size=1280,800",
@@ -56,9 +57,10 @@ async def _save_screen(tab):
 
 async def create_account_browser(index: int) -> dict:
     """
-    Automates the full registration on mindvideo.ai/auth/signup/ using official nodriver methods.
+    Automates the full registration on mindvideo.ai/auth/signup/ using nodriver.
+    Runs headless=False with Xvfb virtual display (:99) in the Docker container.
+    nodriver auto-detects root and disables Chrome sandbox internally.
     """
-    # 1. Provision clean disposable inbox via mail.tm
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
     nickname = "user" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -69,8 +71,7 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=HEADLESS,
-        no_sandbox=True,
+        headless=False,          # uses Xvfb :99 display — avoids --headless=new CDP timing bugs
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
