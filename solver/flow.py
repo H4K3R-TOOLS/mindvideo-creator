@@ -69,7 +69,7 @@ async def create_account_browser(index: int) -> dict:
 
     browser = await uc.start(
         headless=False,
-        sandbox=False,
+        no_sandbox=True,
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
