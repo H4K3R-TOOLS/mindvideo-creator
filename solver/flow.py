@@ -84,43 +84,52 @@ async def create_account_browser(index: int) -> dict:
         tab = await browser.get(SIGNUP_URL)
         set_active_page(tab)
         
-        logger.info(f"[{index}] [nodriver] Navigated to {SIGNUP_URL}")
-        await tab.sleep(2.0)
+        logger.info(f"[{index}] [zendriver] Navigated to {SIGNUP_URL}")
+
+        # Wait for React form to render — select "form" as page-ready signal
+        await tab.select("form", timeout=15)
+        await tab.sleep(2.5)
         await _save_screen(tab)
 
-        # ── Step 0: Fill Form Inputs ─────────────────────────────────────────
-        logger.info(f"[{index}] [nodriver] Filling Step 0 fields...")
+        # ── Step 0: Fill Form Inputs by position ─────────────────────────────
+        # The form has 3 inputs: Email (index 0), Nickname (index 1), Password (index 2).
+        # input[type=email] does NOT match — the email field uses type=text in this React app.
+        # select_all grabs all non-hidden inputs in DOM order.
+        logger.info(f"[{index}] [zendriver] Filling Step 0 fields by position...")
 
-        # 1. Email field
-        email_input = await tab.select("input[type=email], input#email, input[placeholder*='email' i]")
-        if email_input:
-            await email_input.send_keys(email)
-            await tab.sleep(0.3)
+        all_inputs = await tab.select_all("input:not([type=hidden])", timeout=10)
+        logger.info(f"[{index}] [zendriver] Found {len(all_inputs)} input(s) on page")
 
-        # 2. Nickname field
-        nick_input = await tab.select("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]")
-        if nick_input:
-            await nick_input.send_keys(nickname)
-            await tab.sleep(0.3)
+        if len(all_inputs) >= 1:
+            logger.info(f"[{index}] [zendriver] Filling email field (index 0)")
+            await all_inputs[0].click()
+            await all_inputs[0].send_keys(email)
+            await tab.sleep(0.4)
 
-        # 3. Password field
-        pass_input = await tab.select("input[type=password], input#password")
-        if pass_input:
-            await pass_input.send_keys(password)
+        if len(all_inputs) >= 2:
+            logger.info(f"[{index}] [zendriver] Filling nickname field (index 1)")
+            await all_inputs[1].click()
+            await all_inputs[1].send_keys(nickname)
+            await tab.sleep(0.4)
+
+        if len(all_inputs) >= 3:
+            logger.info(f"[{index}] [zendriver] Filling password field (index 2)")
+            await all_inputs[2].click()
+            await all_inputs[2].send_keys(password)
             await tab.sleep(0.5)
 
         await _save_screen(tab)
 
-        # 4. Click Submit / Continue button
-        logger.info(f"[{index}] [nodriver] Submitting Step 0 form...")
+        # 4. Click Continue
+        logger.info(f"[{index}] [zendriver] Submitting Step 0 form...")
         submit_btn = await tab.find("Continue", best_match=True)
         if not submit_btn:
             submit_btn = await tab.select("button[type=submit], .ant-btn")
         if submit_btn:
             await submit_btn.click()
 
-        # ── Step 0: Solve Turnstile ───────────────────────────────────────────
-        logger.info(f"[{index}] [nodriver] Waiting for Turnstile widget...")
+        # ── Step 0: Wait for Turnstile / Step 1 ──────────────────────────────
+        logger.info(f"[{index}] [zendriver] Waiting for Turnstile widget...")
         await tab.sleep(2.5)
         await _save_screen(tab)
 
