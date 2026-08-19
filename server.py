@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, Str
 from pydantic import BaseModel
 
 from api.mindvideo        import send_otp, register, _random_device_id, _fvt_timestamp, _random_name
-from email_service.mailsac import random_address, wait_for_otp
+from email_service         import mailtm
 from solver               import turnstile, sign
 
 PORT        = int(os.getenv("PORT", "8000"))
@@ -205,28 +205,35 @@ async function toggleAccounts() {
 # ── Account creation (Backend Automated) ────────────────────────────────────────
 async def create_one(index: int) -> dict | None:
     async with _sem:
-        email     = random_address()
         device_id = _random_device_id()
         fvt       = _fvt_timestamp()
         name      = _random_name()
-        logger.info(f"[{index}] Starting → {email}")
+
         try:
+            # 1. Create clean inbox via mail.tm
+            email, _, token = await mailtm.create_inbox()
+            logger.info(f"[{index}] Starting → {email}")
+
+            # 2. Solve Turnstile
             logger.info(f"[{index}] Solving Turnstile (Backend Patchright)...")
             cf_token = await turnstile.solve()
             logger.info(f"[{index}] Turnstile solved ✅")
 
+            # 3. Send OTP
             logger.info(f"[{index}] Sending OTP to {email}...")
             await send_otp(email, cf_token)
             logger.info(f"[{index}] OTP sent → waiting for email...")
 
+            # 4. Read OTP & generate WASM i-sign concurrently
             body_for_sign = {
                 "email": email, "password": "", "verify_token": "", "name": name, "code": ""
             }
-            otp_task  = asyncio.create_task(wait_for_otp(email))
+            otp_task  = asyncio.create_task(mailtm.wait_for_otp(email, token))
             sign_task = asyncio.create_task(sign.generate(API_URL, body_for_sign))
             otp, i_sign = await asyncio.gather(otp_task, sign_task)
             logger.info(f"[{index}] OTP={otp} i-sign ready")
 
+            # 5. Register account
             result = await register(
                 email=email, otp=otp, i_sign=i_sign,
                 device_id=device_id, fvt=fvt, name=name,
