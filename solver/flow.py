@@ -129,47 +129,78 @@ async def create_account_browser(index: int) -> dict:
         if submit_btn:
             await submit_btn.click()
 
-        # ── Step 0: Wait for Turnstile / Step 1 ──────────────────────────────
-        logger.info(f"[{index}] [zendriver] Waiting for Turnstile widget...")
-        await tab.sleep(2.5)
+        # ── Step 0: Solve Turnstile ──────────────────────────────────────────
+        logger.info(f"[{index}] [zendriver] Waiting for Turnstile / Step 1...")
+        await tab.sleep(3.0)
         await _save_screen(tab)
 
+        # Primary approach: tab.cf_verify() — built-in zendriver/nodriver Cloudflare solver.
+        # Uses OpenCV to locate and click the Turnstile checkbox automatically.
         turnstile_passed = False
-        has_clicked = False
+        for cf_attempt in range(3):
+            try:
+                logger.info(f"[{index}] [zendriver] cf_verify() attempt {cf_attempt+1}...")
+                await tab.cf_verify()
+                await tab.sleep(2.0)
+                logger.info(f"[{index}] ✅ [zendriver] cf_verify() executed")
+            except Exception as e:
+                logger.debug(f"[{index}] cf_verify attempt {cf_attempt+1} failed: {e}")
 
-        for attempt in range(50):
-            await tab.sleep(0.8)
+            # Check if we're past Turnstile — look for OTP input (short timeout, don't block)
+            try:
+                code_input = await tab.select("input#verificationCode", timeout=2)
+                if code_input:
+                    logger.info(f"[{index}] ✅ [zendriver] OTP input visible — Turnstile passed!")
+                    turnstile_passed = True
+                    break
+            except Exception:
+                pass
+
             await _save_screen(tab)
+            await tab.sleep(1.5)
 
-            # Check if Step 1 (verification code input) appeared
-            code_input = await tab.select("input#verificationCode, input[placeholder*='code' i]")
-            if code_input:
-                logger.info(f"[{index}] ✅ [nodriver] Step 1 reached — OTP verification input visible!")
-                turnstile_passed = True
-                break
+        # Fallback: manual mouse_click on the Turnstile iframe checkbox
+        if not turnstile_passed:
+            logger.info(f"[{index}] [zendriver] cf_verify fallback — manual Turnstile click...")
+            for attempt in range(30):
+                await tab.sleep(1.0)
 
-            if not has_clicked:
+                # Check for OTP input (short timeout)
                 try:
-                    # Look for Turnstile checkbox via find or select
-                    turnstile_elem = await tab.find("Verify you are human", best_match=True)
-                    if not turnstile_elem:
-                        turnstile_elem = await tab.select("input[type=checkbox], .cf-turnstile, #turnstile-container")
-                    
+                    code_input = await tab.select("input#verificationCode", timeout=2)
+                    if code_input:
+                        logger.info(f"[{index}] ✅ [zendriver] OTP input found at attempt {attempt+1}!")
+                        turnstile_passed = True
+                        break
+                except Exception:
+                    pass
+
+                # Try clicking Turnstile element
+                try:
+                    turnstile_elem = await tab.find("Verify you are human", best_match=True, timeout=2)
                     if turnstile_elem:
-                        logger.info(f"[{index}] [nodriver] Found Turnstile element — dispatching mouse click...")
-                        await tab.sleep(0.5)
                         await turnstile_elem.mouse_click()
-                        has_clicked = True
-                        logger.info(f"[{index}] ✅ [nodriver] Clicked Turnstile widget [attempt {attempt+1}]")
+                        logger.info(f"[{index}] [zendriver] Clicked Turnstile [attempt {attempt+1}]")
+                        await tab.sleep(1.5)
                         await _save_screen(tab)
-                except Exception as e:
-                    logger.debug(f"Turnstile click exception: {e}")
+                        continue
+                except Exception:
+                    pass
+
+                # Try selecting the Turnstile iframe checkbox directly
+                try:
+                    cb = await tab.select(".cf-turnstile, input[type=checkbox]", timeout=1)
+                    if cb:
+                        await cb.mouse_click()
+                        await tab.sleep(1.5)
+                except Exception:
+                    pass
+
+                await _save_screen(tab)
 
         if not turnstile_passed:
-            code_input = await tab.select("input#verificationCode, input[placeholder*='code' i]")
-            if not code_input:
-                await _save_screen(tab)
-                raise RuntimeError("Turnstile did not complete in nodriver.")
+            await _save_screen(tab)
+            raise RuntimeError("Turnstile did not complete — OTP input never appeared.")
 
         # ── Step 1: Read OTP from mail.tm and enter verification code ─────────
         logger.info(f"[{index}] [nodriver] Polling mail.tm for OTP code...")
