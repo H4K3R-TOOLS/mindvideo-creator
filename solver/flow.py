@@ -31,7 +31,7 @@ def set_active_page(page):
     _active_page = page
 
 
-PROXY_URL = os.getenv("PROXY_URL", "http://ctkbsyqq-rotate:otnwcuj43j81@p.webshare.io:80")
+PROXY_URL = os.getenv("PROXY_URL", "socks5://ctkbsyqq-rotate:otnwcuj43j81@p.webshare.io:1080")
 
 # Chromium flags for Docker/Linux on Xvfb (:99). 2GB RAM.
 # headless=False → Chromium runs on Xvfb virtual display (DISPLAY=:99 in Dockerfile).
@@ -45,7 +45,6 @@ _CHROMIUM_ARGS = [
     "--hide-scrollbars",
     "--mute-audio",
     "--disable-blink-features=AutomationControlled",
-    f"--proxy-server={PROXY_URL}",
 ]
 
 _CHROME_PATHS = [
@@ -86,15 +85,6 @@ async def _cdp_click(tab, x: float, y: float):
 async def create_account_browser(index: int) -> dict:
     """
     Full signup automation on mindvideo.ai using nodriver.
-
-    Flow:
-      1. Create disposable inbox (mail.tm)
-      2. Navigate to signup page
-      3. Fill email / nickname / password by DOM position (email field is type=text)
-      4. Click Continue → Cloudflare Turnstile appears
-      5. Solve Turnstile via tab.cf_verify() (OpenCV visual click) + CDP bounding-box fallback
-      6. Wait for OTP input (JS polling, non-blocking)
-      7. Retrieve OTP from mail.tm, enter it, submit
     """
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
@@ -106,13 +96,20 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=False,          # Use Xvfb display (DISPLAY=:99) — avoids headless detection
+        headless=False,
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
 
     try:
-        tab = await browser.get(SIGNUP_URL)
+        if PROXY_URL:
+            logger.info(f"[{index}] [nodriver] Creating context with proxy: {PROXY_URL[:30]}...")
+            tab = await browser.create_context(
+                url=SIGNUP_URL,
+                proxy_server=PROXY_URL,
+            )
+        else:
+            tab = await browser.get(SIGNUP_URL)
         set_active_page(tab)
         logger.info(f"[{index}] [nodriver] Navigated to {SIGNUP_URL}")
 
