@@ -45,7 +45,10 @@ logger = logging.getLogger("server")
 app = FastAPI(title="MindVideo Account Creator", version="1.0.0")
 
 _sem = asyncio.Semaphore(THREADS)
-_job_status: dict = {"running": False, "total": 0, "done": 0, "failed": 0, "started_at": None}
+_job_status: dict = {
+    "running": False, "total": 0, "done": 0, "failed": 0,
+    "started_at": None, "last_error": None,
+}
 
 
 # ── Account creation logic ────────────────────────────────────────────────────
@@ -76,6 +79,7 @@ async def create_one(index: int) -> dict | None:
             return result
         except Exception as e:
             logger.error(f"[{index}] ❌ {e}")
+            _job_status["last_error"] = str(e)
             return None
 
 
@@ -134,6 +138,16 @@ async def list_accounts():
         return {"count": len(lines), "accounts": lines}
     except FileNotFoundError:
         return {"count": 0, "accounts": []}
+
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs():
+    try:
+        with open("logs/creator.log", "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        return "".join(lines[-100:])   # last 100 lines
+    except FileNotFoundError:
+        return "No logs yet."
 
 
 @app.get("/accounts/raw", response_class=PlainTextResponse)

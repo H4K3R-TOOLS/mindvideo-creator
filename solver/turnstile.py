@@ -15,6 +15,17 @@ SITEKEY   = "0x4AAAAAACseUFodNxM1zekf"
 SITE_URL  = "https://www.mindvideo.ai"
 HEADLESS  = os.getenv("HEADLESS", "true").lower() == "true"
 
+_CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",       # critical in containers — avoids /dev/shm crash
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-blink-features=AutomationControlled",
+    "--single-process",              # reduces memory in constrained containers
+    "--no-zygote",
+]
+
 _WIDGET_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -44,11 +55,7 @@ async def solve(timeout_ms: int = 35000) -> str:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=HEADLESS,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ],
+            args=_CHROMIUM_ARGS,
         )
         ctx = await browser.new_context(
             user_agent=(
