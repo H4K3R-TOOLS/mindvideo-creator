@@ -31,7 +31,7 @@ def set_active_page(page):
     _active_page = page
 
 
-PROXY_URL = os.getenv("PROXY_URL", "socks5://ctkbsyqq-rotate:otnwcuj43j81@p.webshare.io:1080")
+PROXY_URL = os.getenv("PROXY_URL", "http://ctkbsyqq-rotate:otnwcuj43j81@p.webshare.io:80")
 
 # Chromium flags for Docker/Linux on Xvfb (:99). 2GB RAM.
 # headless=False → Chromium runs on Xvfb virtual display (DISPLAY=:99 in Dockerfile).
