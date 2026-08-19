@@ -130,37 +130,100 @@ async def create_account_browser(index: int) -> dict:
             await submit_btn.click()
 
         # ── Step 0 + 1: Wait for Turnstile → OTP screen ─────────────────────
-        # Strategy: tab.evaluate() JS checks are 100% non-blocking (no 10s timeouts).
-        # We poll every second for up to 90s for:
-        #   (A) OTP input appearing → Turnstile auto-solved + send-mail-code done by page
-        #   (B) cf-turnstile-response token appearing → Turnstile solved, may need to re-click Continue
-        # Every 8s also try cf_verify() and log what it reports.
-        logger.info(f"[{index}] [zendriver] Waiting for Turnstile auto-solve (up to 90s)...")
+        # Screenshot shows the Turnstile "Verify you are human" checkbox renders inline.
+        # It's inside a Cloudflare iframe — we need to either:
+        #   (A) get that iframe as a separate Tab via browser.targets / get_frames()
+        #       and click the checkbox inside it, OR
+        #   (B) use JS bounding-box to find .cf-turnstile and click the checkbox region
+        # We poll with tab.evaluate() (non-blocking JS) for the OTP input.
+        logger.info(f"[{index}] [zendriver] Waiting for Turnstile / Step 1 (up to 90s)...")
         await tab.sleep(3.0)
         await _save_screen(tab)
 
+        async def _click_turnstile():
+            """Try all methods to click the Turnstile checkbox."""
+            # Method A: find Cloudflare challenge iframe via browser.targets or get_frames
+            try:
+                all_targets = browser.targets
+                logger.info(f"[{index}] Targets: {[str(getattr(t,'url',''))[:60] for t in all_targets]}")
+                for target in all_targets:
+                    target_url = str(getattr(target, 'url', '') or '')
+                    if 'challenge' in target_url or 'turnstile' in target_url:
+                        logger.info(f"[{index}] Found CF iframe target: {target_url[:60]}")
+                        try:
+                            cb = await target.select("input[type=checkbox]", timeout=3)
+                            if cb:
+                                await cb.mouse_click()
+                                logger.info(f"[{index}] ✅ Clicked checkbox via iframe target!")
+                                return True
+                        except Exception as e:
+                            logger.info(f"[{index}] iframe target click: {e}")
+            except Exception as e:
+                logger.info(f"[{index}] targets approach: {e}")
+
+            # Method B: JS bounding-box → CDP mouse click on .cf-turnstile left edge
+            try:
+                box = await tab.evaluate("""
+                    (() => {
+                        const el = document.querySelector(
+                            '.cf-turnstile, [class*="turnstile"], iframe[src*="challenge"]'
+                        );
+                        if (!el) return null;
+                        const r = el.getBoundingClientRect();
+                        return {x: r.left, y: r.top, w: r.width, h: r.height};
+                    })()
+                """)
+                if box and isinstance(box, dict):
+                    # Checkbox is in the leftmost 30px of the Turnstile widget
+                    click_x = float(box['x']) + 20.0
+                    click_y = float(box['y']) + float(box['h']) / 2.0
+                    logger.info(f"[{index}] Clicking Turnstile at ({click_x:.0f},{click_y:.0f}) box={box}")
+                    import zendriver.cdp.input_ as cdp_input
+                    await tab.send(cdp_input.dispatch_mouse_event("mousePressed", x=click_x, y=click_y, button="left", buttons=1, click_count=1))
+                    await tab.sleep(0.05)
+                    await tab.send(cdp_input.dispatch_mouse_event("mouseReleased", x=click_x, y=click_y, button="left", buttons=0, click_count=1))
+                    logger.info(f"[{index}] ✅ CDP mouse click dispatched on Turnstile!")
+                    return True
+                else:
+                    logger.info(f"[{index}] .cf-turnstile element not found in DOM")
+            except Exception as e:
+                logger.info(f"[{index}] bounding box click: {type(e).__name__}: {e}")
+
+            # Method C: tab.find() — searches iframes too
+            try:
+                ts_elem = await tab.find("Verify you are human", best_match=True)
+                if ts_elem:
+                    await ts_elem.mouse_click()
+                    logger.info(f"[{index}] ✅ Clicked via tab.find() 'Verify you are human'")
+                    return True
+            except Exception as e:
+                logger.info(f"[{index}] tab.find Turnstile: {type(e).__name__}: {e}")
+
+            return False
+
         otp_input_found = False
+        clicked = False
         for attempt in range(90):
-            # ── Check A: OTP input (non-blocking JS) ─────────────────────────
+            # ── Fast JS check for OTP input (non-blocking) ───────────────────
             try:
                 has_otp = await tab.evaluate(
                     "!!document.querySelector('input#verificationCode, "
                     "input[placeholder*=\"code\"], input[placeholder*=\"Code\"]')"
                 )
                 if has_otp:
-                    logger.info(f"[{index}] ✅ [zendriver] OTP input found (attempt {attempt+1})!")
+                    logger.info(f"[{index}] ✅ OTP input visible (attempt {attempt+1})!")
                     otp_input_found = True
                     break
             except Exception as e:
-                logger.debug(f"[{index}] JS OTP check err: {e}")
+                logger.debug(f"[{index}] JS OTP check: {e}")
 
-            # ── Check B: Turnstile token value (non-blocking JS) ─────────────
+            # ── Check Turnstile token auto-solved → re-click Continue ─────────
             try:
                 token_val = await tab.evaluate(
                     "document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''"
                 )
                 if token_val and len(str(token_val)) > 20:
-                    logger.info(f"[{index}] [zendriver] Turnstile token present, re-clicking Continue...")
+                    logger.info(f"[{index}] Turnstile token present, clicking Continue...")
                     try:
                         btn = await tab.find("Continue", best_match=True)
                         if btn:
@@ -168,27 +231,13 @@ async def create_account_browser(index: int) -> dict:
                             await tab.sleep(2.5)
                     except Exception:
                         pass
-            except Exception as e:
-                logger.debug(f"[{index}] JS token check err: {e}")
+            except Exception:
+                pass
 
-            # ── Every 8s: try cf_verify() + manual iframe search ──────────────
-            if attempt % 8 == 0:
-                try:
-                    await tab.cf_verify()
-                    logger.info(f"[{index}] [zendriver] cf_verify() called at attempt {attempt}")
-                except Exception as e:
-                    logger.info(f"[{index}] [zendriver] cf_verify() → {type(e).__name__}: {e}")
-
-            # ── Every 8s: try finding Turnstile text (searches all iframes) ──
-            if attempt % 8 == 4:
-                try:
-                    ts_elem = await tab.find("Verify you are human", best_match=True)
-                    if ts_elem:
-                        logger.info(f"[{index}] [zendriver] Found Turnstile text elem, clicking...")
-                        await ts_elem.mouse_click()
-                        await tab.sleep(2.0)
-                except Exception:
-                    pass
+            # ── Click Turnstile checkbox every 4 attempts ─────────────────────
+            if attempt % 4 == 0:
+                clicked = await _click_turnstile()
+                await tab.sleep(2.0)
 
             await tab.sleep(1.0)
             if attempt % 15 == 14:
