@@ -3,7 +3,7 @@ FROM python:3.11-slim
 
 # ── Base tools & Xvfb virtual display ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl wget gnupg ca-certificates xvfb \
+    curl wget gnupg ca-certificates xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 20 ────────────────────────────────────────────────────────────────
@@ -61,4 +61,4 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24", "python", "server.py"]
+CMD ["xvfb-run", "-a", "-s", "-screen 0 1280x800x24", "python", "server.py"]
