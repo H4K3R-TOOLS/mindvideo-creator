@@ -1,4 +1,4 @@
-nodriver
+nodriver>=0.50.1
 opencv-python-headless
 patchright==1.50.0
 httpx==0.27.0

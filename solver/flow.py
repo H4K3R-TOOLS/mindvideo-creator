@@ -158,10 +158,15 @@ async def create_account_browser(index: int) -> dict:
 
         # ── Step 1: Solve Turnstile → wait for OTP input ──────────────────────
         # After Continue: Cloudflare Turnstile checkbox appears inside a CF iframe.
-        # Primary solve: tab.cf_verify() — nodriver's built-in OpenCV visual solver.
-        # It takes a screenshot, finds the CF checkbox pixel-pattern, clicks it.
-        # Fallback: CDP bounding-box click on the iframe element coordinates.
-        # We poll every second (non-blocking JS evaluate) for the OTP input to appear.
+        #
+        # nodriver 0.50.1+ FEATURES used here:
+        #   1. tab.cf_verify()     — OpenCV screenshot-based visual click on checkbox
+        #   2. tab.find(text)      — searches INSIDE iframes (0.50.1+ flat-mode CDP).
+        #                           Can find "Verify you are human" inside CF iframe
+        #                           and mouse_click() it directly.
+        #   3. tab.get_frames()    — returns inspectable iframe Tab objects
+        #
+        # We poll every 1s with tab.evaluate() (non-blocking JS) for the OTP input.
         logger.info(f"[{index}] [nodriver] Waiting 8s for Turnstile to initialize...")
         await tab.sleep(8.0)
         await _save_screen(tab)
@@ -183,13 +188,13 @@ async def create_account_browser(index: int) -> dict:
             except Exception as e:
                 logger.debug(f"[{index}] JS OTP check: {e}")
 
-            # ── Check if Turnstile token auto-solved (re-click Continue if so) ─
+            # ── Check Turnstile token auto-solved → re-click Continue ─────────
             try:
                 token_val = await tab.evaluate(
                     "document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''"
                 )
                 if token_val and len(str(token_val)) > 20:
-                    logger.info(f"[{index}] Turnstile token present! Clicking Continue...")
+                    logger.info(f"[{index}] Turnstile token present — re-clicking Continue...")
                     try:
                         btn = await tab.find("Continue", best_match=True)
                         if btn:
@@ -200,30 +205,47 @@ async def create_account_browser(index: int) -> dict:
             except Exception:
                 pass
 
-            # ── Every 5s: run cf_verify() (nodriver OpenCV visual solver) ─────
+            # ── Every 5s: cf_verify() — OpenCV visual Turnstile solver ────────
             if attempt % 5 == 0:
                 try:
                     logger.info(f"[{index}] [nodriver] cf_verify() attempt {attempt // 5 + 1}...")
                     await tab.cf_verify()
-                    logger.info(f"[{index}] ✅ cf_verify() completed!")
+                    logger.info(f"[{index}] ✅ cf_verify() succeeded!")
                     cf_verify_called = True
                     await tab.sleep(3.0)
                     await _save_screen(tab)
+                except AttributeError:
+                    # nodriver version < 0.50.1 installed — use find() instead
+                    logger.warning(f"[{index}] cf_verify() not available — needs nodriver>=0.50.1")
                 except Exception as e:
                     logger.info(f"[{index}] cf_verify: {type(e).__name__}: {e}")
 
-            # ── Every 10s (offset 2): CDP bounding-box click on Turnstile iframe ─
-            # The Turnstile renders as <iframe src="challenges.cloudflare.com/...">
-            # in the main page DOM. We can get its bounding rect and click.
-            if attempt % 10 == 2:
+            # ── Every 5s (offset 2): tab.find() iframe search ─────────────────
+            # nodriver 0.50.1+ find() searches INSIDE iframes via flat CDP mode.
+            # "Verify you are human" text is inside the Cloudflare iframe.
+            if attempt % 5 == 2:
+                try:
+                    logger.info(f"[{index}] tab.find('Verify you are human') [attempt {attempt}]...")
+                    ts_elem = await tab.find("Verify you are human", best_match=True)
+                    if ts_elem:
+                        logger.info(f"[{index}] ✅ Found Turnstile elem in iframe — clicking!")
+                        await ts_elem.mouse_click()
+                        await tab.sleep(3.0)
+                        await _save_screen(tab)
+                    else:
+                        logger.info(f"[{index}] tab.find() returned None")
+                except Exception as e:
+                    logger.info(f"[{index}] tab.find Turnstile: {type(e).__name__}: {e}")
+
+            # ── Every 10s (offset 7): CDP bounding-box click on iframe ────────
+            if attempt % 10 == 7:
                 try:
                     box = await tab.evaluate("""
                         (() => {
                             const el = document.querySelector(
                                 'iframe[src*="challenges.cloudflare"],'
                                 + 'iframe[src*="challenge-platform"],'
-                                + '.cf-turnstile,'
-                                + '[data-sitekey]'
+                                + '.cf-turnstile, [data-sitekey]'
                             );
                             if (!el) return null;
                             const r = el.getBoundingClientRect();
@@ -231,13 +253,9 @@ async def create_account_browser(index: int) -> dict:
                         })()
                     """)
                     if box and isinstance(box, dict) and box.get('w', 0) > 0:
-                        # Checkbox is at the leftmost ~25px of the Turnstile widget
                         click_x = float(box['x']) + 22.0
                         click_y = float(box['y']) + float(box['h']) / 2.0
-                        logger.info(
-                            f"[{index}] CDP click on Turnstile at ({click_x:.0f},{click_y:.0f})"
-                            f" — box={box}"
-                        )
+                        logger.info(f"[{index}] CDP click Turnstile at ({click_x:.0f},{click_y:.0f})")
                         await _cdp_click(tab, click_x, click_y)
                         await tab.sleep(3.0)
                         await _save_screen(tab)
