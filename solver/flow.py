@@ -105,22 +105,30 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # Look for Turnstile iframe inside page
+            # Deep diagnostic inspection
+            diag = await page.evaluate("""
+                () => {
+                    const ts = !!window.turnstile;
+                    const iframes = Array.from(document.querySelectorAll('iframe')).map(f => f.src);
+                    const container = document.querySelector('#turnstile-container');
+                    const cStyle = container ? container.getAttribute('style') : null;
+                    const cHtml = container ? container.innerHTML : null;
+                    return { ts, iframes, cStyle, cHtml };
+                }
+            """)
+            if attempt % 5 == 0:
+                logger.info(f"[{index}] Diagnostic (attempt {attempt+1}): {diag}")
+
+            # Find Turnstile iframe and simulate real mouse click on checkbox
             try:
-                iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
+                iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com'], iframe[src*='cloudflare'], iframe")
                 if iframe_handle:
                     box = await iframe_handle.bounding_box()
                     if box and box["width"] > 0 and box["height"] > 0:
                         click_x = box["x"] + 30
                         click_y = box["y"] + box["height"] / 2
                         await page.mouse.click(click_x, click_y)
-                        logger.info(f"[{index}] Mouse clicked Turnstile checkbox at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
-                else:
-                    # If iframe not found yet, check if turnstile-container exists
-                    container = await page.query_selector("#turnstile-container")
-                    if container:
-                        style = await container.get_attribute("style")
-                        logger.debug(f"[{index}] #turnstile-container style: {style}")
+                        logger.info(f"[{index}] Mouse clicked Turnstile at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
             except Exception as e:
                 logger.debug(f"Click attempt error: {e}")
 
