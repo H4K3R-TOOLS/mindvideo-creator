@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
-# ── Base tools + Xvfb for Headful Browser Execution ───────────────────────────
+# ── Base tools + Xvfb & Xauth for Headful Browser Execution ───────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl wget gnupg ca-certificates xvfb \
+    curl wget gnupg ca-certificates xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 20 ────────────────────────────────────────────────────────────────
