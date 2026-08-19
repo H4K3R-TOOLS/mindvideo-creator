@@ -1,5 +1,5 @@
 # Python 3.11 | solver/flow.py
-# Purpose: Autonomous browser registration flow with full Xvfb display & humanized Turnstile solving
+# Purpose: Autonomous browser registration flow with exact checkbox target & interactive click support
 
 import asyncio
 import logging
@@ -8,7 +8,6 @@ import random
 import string
 from patchright.async_api import async_playwright
 from email_service import mailtm
-from solver.ai import analyze_status
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +16,16 @@ HEADLESS   = os.getenv("HEADLESS", "false").lower() == "true"
 PROXY_URL  = os.getenv("PROXY_URL", "").strip()
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCREENSHOT_PATH = os.path.join(BASE_DIR, "screenshot.png")
+
+_active_page = None
+
+def get_active_page():
+    global _active_page
+    return _active_page
+
+def set_active_page(page):
+    global _active_page
+    _active_page = page
 
 _CHROMIUM_ARGS = [
     "--no-sandbox",
@@ -67,7 +76,7 @@ async def _human_move_and_click(page, start_x, start_y, target_x, target_y, inde
         await asyncio.sleep(0.02)
 
     # Hover over checkbox like a human
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(0.3)
     await _save_screen(page, (target_x, target_y))
 
     # Mouse down, human press hold, mouse up
@@ -82,7 +91,6 @@ async def create_account_browser(index: int) -> dict:
     """
     Automates the full native registration on mindvideo.ai/auth/signup/
     """
-    # 1. Provision clean disposable inbox via mail.tm
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
     nickname = "user" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -103,12 +111,12 @@ async def create_account_browser(index: int) -> dict:
             viewport={"width": 1280, "height": 800},
         )
         page = await context.new_page()
+        set_active_page(page)
 
         # Pipe browser console & page errors for live monitoring
         page.on("console", lambda msg: logger.info(f"[{index} Console] {msg.text}"))
         page.on("pageerror", lambda err: logger.error(f"[{index} PageError] {err}"))
 
-        # Track network responses for send-mail-code and register
         send_mail_result = {"status": None, "body": None}
 
         async def handle_response(response):
@@ -167,41 +175,12 @@ async def create_account_browser(index: int) -> dict:
         await submit_btn.click()
 
         # ── Step 0 Turnstile: Wait for iframe readiness ───────────────────────
-        logger.info(f"[{index}] Waiting for Turnstile iframe to mount & initialize...")
-        
-        # Wait until the Cloudflare iframe is actually rendered in DOM
-        try:
-            await page.wait_for_selector("#turnstile-container iframe, iframe[src*='challenges']", timeout=15000)
-        except Exception:
-            logger.warning(f"[{index}] Iframe selector timeout — checking fallback container")
-
-        # Give Cloudflare bundle 2.5s to finish handshake and register click handlers
-        logger.info(f"[{index}] Giving Turnstile 2.5s to finish handshake...")
+        logger.info(f"[{index}] Waiting for Turnstile iframe to mount...")
         await asyncio.sleep(2.5)
 
-        # Calculate exact rendered checkbox coordinates using getBoundingClientRect
-        coords = await page.evaluate("""
-            () => {
-                const ifr = document.querySelector('#turnstile-container iframe') || document.querySelector('iframe');
-                if (ifr) {
-                    const r = ifr.getBoundingClientRect();
-                    if (r.width > 50 && r.height > 20) {
-                        return { x: r.left + 28, y: r.top + (r.height / 2), valid: true };
-                    }
-                }
-                const cnt = document.querySelector('#turnstile-container');
-                if (cnt) {
-                    const r = cnt.getBoundingClientRect();
-                    if (r.width > 50 && r.height > 20) {
-                        return { x: r.left + 28, y: r.top + (r.height / 2), valid: true };
-                    }
-                }
-                return { valid: false };
-            }
-        """)
-
-        target_x = coords.get("x", 714) if coords.get("valid") else 714
-        target_y = coords.get("y", 587) if coords.get("valid") else 587
+        # Exact checkbox center coordinates on 1280x800 viewport
+        target_x = 714
+        target_y = 587
 
         logger.info(f"[{index}] Executing humanized mouse movement to ({int(target_x)}, {int(target_y)})...")
         await _human_move_and_click(page, btn_center_x, btn_center_y, target_x, target_y, index)
@@ -262,6 +241,7 @@ async def create_account_browser(index: int) -> dict:
         await _save_screen(page)
         logger.info(f"[{index}] ✅ Registration successfully completed for: {email}")
 
+        set_active_page(None)
         await browser.close()
 
         return {

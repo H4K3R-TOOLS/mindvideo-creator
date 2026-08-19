@@ -1,5 +1,5 @@
 # Python 3.11 | server.py
-# Purpose: FastAPI web server — dashboard UI + HTTP API + live log streaming + live screenshot preview
+# Purpose: FastAPI web server — dashboard UI + HTTP API + live log streaming + interactive live screen clicker
 # Port: 8000
 
 import asyncio
@@ -19,12 +19,11 @@ from pydantic import BaseModel
 from api.mindvideo        import send_otp, register, _random_device_id, _fvt_timestamp, _random_name
 from email_service         import mailtm
 from solver               import turnstile, sign
-from solver.flow          import create_account_browser
+from solver.flow          import create_account_browser, set_active_page, get_active_page
 
 PORT        = int(os.getenv("PORT", "8000"))
 THREADS     = int(os.getenv("THREADS", "1"))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "/app/accounts.txt")
-API_URL     = "https://api-app.mindvideo.ai/api/register"
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE    = os.path.join(BASE_DIR, "logs", "creator.log")
 
@@ -41,15 +40,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("server")
 
-app = FastAPI(title="MindVideo Account Creator", version="2.5.0")
+app = FastAPI(title="MindVideo Account Creator", version="2.6.0")
 
 _sem = asyncio.Semaphore(THREADS)
 _job_status: dict = {
     "running": False, "total": 0, "done": 0, "failed": 0,
     "started_at": None, "last_error": None,
 }
-
-SITEKEY = "0x4AAAAAACseUFodNxM1zekf"
 
 # ── Dashboard HTML ─────────────────────────────────────────────────────────────
 _DASHBOARD = """<!DOCTYPE html>
@@ -86,8 +83,9 @@ _DASHBOARD = """<!DOCTYPE html>
     padding:14px;max-height:280px;overflow-y:auto;font-size:13px;margin-top:12px}
   .acc-line{color:#7eb6ff;padding:3px 0;border-bottom:1px solid #111}
   h2{font-size:13px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
-  .screen-wrap{background:#000;border:1px solid #222;border-radius:6px;padding:10px;text-align:center;min-height:200px}
-  #live-screen{max-width:100%;max-height:480px;border-radius:4px;border:1px solid #333;display:none}
+  .screen-wrap{background:#000;border:1px solid #222;border-radius:6px;padding:10px;text-align:center;min-height:200px;position:relative}
+  #live-screen{max-width:100%;max-height:480px;border-radius:4px;border:1px solid #333;display:none;cursor:crosshair}
+  .hint{font-size:11px;color:#777;margin-top:6px}
 </style>
 </head>
 <body>
@@ -116,11 +114,12 @@ _DASHBOARD = """<!DOCTYPE html>
 </div>
 
 <div class="card">
-  <h2>Live Browser View <span id="screen-ts" style="font-size:11px;color:#555"></span></h2>
+  <h2>Interactive Live Browser View <span id="screen-ts" style="font-size:11px;color:#555"></span></h2>
   <div class="screen-wrap">
-    <img id="live-screen" src="/screenshot?t=0" alt="Live View" onload="this.style.display='inline-block'" onerror="this.style.display='none'"/>
+    <img id="live-screen" src="/screenshot?t=0" alt="Live View" onclick="handleScreenClick(event)" onload="this.style.display='inline-block'" onerror="this.style.display='none'"/>
     <div id="no-screen" style="color:#555;font-size:12px;padding:30px">Browser view will appear here when running...</div>
   </div>
+  <div class="hint">💡 <i>Tip: You can click/tap directly on the preview image to trigger a click at that exact spot in the live browser!</i></div>
 </div>
 
 <div class="card">
@@ -172,6 +171,23 @@ setInterval(() => {
   };
   newImg.src = src;
 }, 400);
+
+async function handleScreenClick(e) {
+  const img = e.target;
+  const rect = img.getBoundingClientRect();
+  const scaleX = 1280 / rect.width;
+  const scaleY = 800 / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+  appendLog(`>>> Interactive click sent: (${Math.round(x)}, ${Math.round(y)})`);
+  try {
+    await fetch('/click', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({x, y})
+    });
+  } catch(err){}
+}
 
 async function pollHealth() {
   try {
@@ -262,6 +278,23 @@ async def get_screenshot():
     if os.path.exists(screenshot_path):
         return FileResponse(screenshot_path, media_type="image/png")
     return Response(status_code=404)
+
+
+class ClickPayload(BaseModel):
+    x: float
+    y: float
+
+@app.post("/click")
+async def click_endpoint(payload: ClickPayload):
+    page = get_active_page()
+    if page:
+        try:
+            await page.mouse.click(payload.x, payload.y)
+            logger.info(f"Interactive click dispatched at ({int(payload.x)}, {int(payload.y)})")
+            return {"status": "ok", "x": payload.x, "y": payload.y}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"status": "no_active_page"}
 
 
 @app.get("/health")
