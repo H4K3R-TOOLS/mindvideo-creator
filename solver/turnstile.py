@@ -1,46 +1,32 @@
 # Python 3.11 | solver/turnstile.py
-# Purpose: Solve Cloudflare Turnstile — Theyka/Turnstile-Solver approach
-# Method:  Spin a local aiohttp server → patchright navigates to it →
-#          CF sees a real patched Chromium browser → auto-solves token.
-# Source:  https://github.com/Theyka/Turnstile-Solver (logic replicated here)
-# Cost:    FREE — fully self-hosted, no external API needed.
-#
-# Sitekey: 0x4AAAAAACseUFodNxM1zekf  |  Site: https://www.mindvideo.ai
+# Pure Backend Turnstile Solver based on Theyka/Turnstile-Solver
+# Method: Playwright Route Interception (serves widget directly under target domain)
+# + Mouse Click Automation + Response Input Polling.
 
 import asyncio
 import logging
 import os
-import random
-
-from aiohttp import web
+from typing import Optional
 from patchright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
 
-SITEKEY  = "0x4AAAAAACseUFodNxM1zekf"
-SITE_URL = "https://www.mindvideo.ai"
-HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+SITEKEY    = "0x4AAAAAACseUFodNxM1zekf"
+TARGET_URL = "https://www.mindvideo.ai/"
+HEADLESS   = os.getenv("HEADLESS", "true").lower() == "true"
 
-# Exact Theyka approach: simple local HTML, turnstile loads clean
-_HTML = """<!DOCTYPE html>
-<html>
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8"/>
-  <title>verify</title>
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Turnstile Solver</title>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
-<body>
-  <div class="cf-turnstile"
-       data-sitekey="{sitekey}"
-       data-callback="cb"
-       data-theme="light">
-  </div>
-  <script>
-    window._token = null;
-    function cb(t) {{ window._token = t; }}
-  </script>
+<body style="background:#111; color:#fff; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;">
+    <div class="cf-turnstile" data-sitekey="{sitekey}"></div>
 </body>
-</html>""".format(sitekey=SITEKEY)
+</html>"""
 
 _CHROMIUM_ARGS = [
     "--no-sandbox",
@@ -51,93 +37,76 @@ _CHROMIUM_ARGS = [
     "--disable-blink-features=AutomationControlled",
 ]
 
-
-async def solve(timeout_ms: int = 120000) -> str:
+async def solve(timeout_seconds: int = 60) -> str:
     """
-    Start local aiohttp server, open with patchright, intercept Turnstile token.
-    patchright patches Chromium fingerprint → CF auto-solves.
-    Returns cf_challenge_token string. Raises TimeoutError on failure.
+    Solves Cloudflare Turnstile purely in the backend using patchright.
+    1. Intercepts TARGET_URL with route fulfill (domain-authentic html).
+    2. Clicks the Turnstile checkbox autonomously.
+    3. Reads token from [name=cf-turnstile-response].
     """
-    port = random.randint(10000, 60000)
-    token_holder = {"token": None}
+    logger.info("Launching backend patchright browser for Turnstile solve...")
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=HEADLESS,
+            args=_CHROMIUM_ARGS,
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            viewport={"width": 1280, "height": 720},
+        )
+        page = await context.new_page()
 
-    # ── Local aiohttp server ──────────────────────────────────────────────────
-    async def handle(request):
-        return web.Response(text=_HTML, content_type="text/html")
+        # Build custom HTML with sitekey
+        page_html = HTML_TEMPLATE.format(sitekey=SITEKEY)
 
-    srv_app = web.Application()
-    srv_app.router.add_get("/", handle)
-    runner = web.AppRunner(srv_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", port)
-    await site.start()
-    local_url = f"http://127.0.0.1:{port}/"
-    logger.info(f"Local Turnstile server: {local_url}")
+        # Route interception: fulfill domain URL directly with target HTML
+        await page.route(TARGET_URL, lambda route: route.fulfill(
+            status=200,
+            content_type="text/html",
+            body=page_html
+        ))
 
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=HEADLESS,
-                args=_CHROMIUM_ARGS,
-            )
-            ctx = await browser.new_context(
-                # Spoof UA + platform to look like real Windows Chrome
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/New_York",
-                viewport={"width": 1280, "height": 720},
-                extra_http_headers={
-                    "Accept-Language":    "en-US,en;q=0.9",
-                    "sec-ch-ua":          '"Not=A?Brand";v="99", "Chromium";v="131"',
-                    "sec-ch-ua-mobile":   "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    # Spoof origin/referer to mindvideo.ai
-                    "Origin":  SITE_URL,
-                    "Referer": SITE_URL + "/",
-                },
-            )
-            page = await ctx.new_page()
+        logger.info(f"Navigating to intercepted route: {TARGET_URL}")
+        await page.goto(TARGET_URL, wait_until="domcontentloaded")
 
-            # Override JS-exposed location to look like mindvideo.ai
-            await page.add_init_script(f"""
-                Object.defineProperty(document, 'referrer', {{
-                    get: () => '{SITE_URL}/'
-                }});
-                // Patch hostname so CF sitekey domain check passes
-                const origLocation = window.location;
-                Object.defineProperty(window, 'location', {{
-                    value: new Proxy(origLocation, {{
-                        get(t, p) {{
-                            if (p === 'hostname') return 'www.mindvideo.ai';
-                            if (p === 'origin')   return '{SITE_URL}';
-                            if (p === 'href')      return '{SITE_URL}/auth/signup/';
-                            return typeof t[p] === 'function' ? t[p].bind(t) : t[p];
-                        }}
-                    }}),
-                    configurable: true
-                }});
-            """)
+        # Poll and click loop
+        start_time = asyncio.get_event_loop().time()
+        attempts = 0
+        token = None
 
-            logger.info("Navigating to local Turnstile page...")
-            await page.goto(local_url, wait_until="domcontentloaded", timeout=20000)
+        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+            attempts += 1
+            try:
+                # Check if response element has token value
+                val = await page.input_value("[name=cf-turnstile-response]")
+                if val and len(val) > 10:
+                    token = val
+                    logger.info(f"✅ Turnstile token acquired in {attempts} attempt(s): {token[:40]}...")
+                    break
+            except Exception:
+                pass
 
-            logger.info("Waiting for Turnstile auto-solve...")
-            await page.wait_for_function(
-                "() => typeof window._token === 'string' && window._token.length > 10",
-                timeout=timeout_ms,
-            )
-            token: str = await page.evaluate("() => window._token")
-            token_holder["token"] = token
-            logger.info(f"✅ Turnstile solved: {token[:40]}...")
-            await browser.close()
+            # Try clicking the turnstile checkbox widget
+            try:
+                await page.click("//div[@class='cf-turnstile']", timeout=2000)
+            except Exception:
+                # Fallback: try clicking iframe if div click didn't trigger
+                try:
+                    iframe = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
+                    await iframe.locator("body").click(timeout=1500)
+                except Exception:
+                    pass
 
-    finally:
-        await runner.cleanup()
+            await asyncio.sleep(1.0)
 
-    if not token_holder["token"]:
-        raise TimeoutError("Turnstile solve failed — token not captured")
-    return token_holder["token"]
+        await browser.close()
+
+        if not token:
+            raise TimeoutError(f"Turnstile solve failed after {timeout_seconds}s ({attempts} attempts)")
+
+        return token

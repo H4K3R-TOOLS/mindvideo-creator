@@ -201,17 +201,15 @@ async function pollHealth() {
 pollHealth(); setInterval(pollHealth, 3000);
 
 async function createAccounts() {
-  if (!_cfToken) { alert('Turnstile not solved yet — wait for ✅'); return; }
   const count = parseInt(document.getElementById('count').value)||1;
-  const token = _cfToken;
-  _cfToken = null;  // consume token
-  document.getElementById('token-status').innerHTML = '<span class="tok-wait">⏳ Token used — solving next...</span>';
-  updateBtn();
+  const btn = document.getElementById('btn-create');
+  btn.disabled = true;
+  btn.textContent = '⏳ RUNNING...';
   try {
     const r = await fetch('/create', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({count, cf_token: token})
+      body: JSON.stringify({count})
     });
     const d = await r.json();
     appendLog('>>> ' + JSON.stringify(d));
@@ -232,8 +230,8 @@ async function toggleAccounts() {
 </html>""".replace("SITEKEY_PLACEHOLDER", SITEKEY)
 
 
-# ── Account creation (no server-side Turnstile needed) ───────────────────────
-async def create_one(index: int, cf_token: str) -> dict | None:
+# ── Account creation (Backend Automated) ────────────────────────────────────────
+async def create_one(index: int) -> dict | None:
     async with _sem:
         email     = random_address()
         device_id = _random_device_id()
@@ -241,7 +239,11 @@ async def create_one(index: int, cf_token: str) -> dict | None:
         name      = _random_name()
         logger.info(f"[{index}] Starting → {email}")
         try:
-            logger.info(f"[{index}] Sending OTP (CF token from browser)...")
+            logger.info(f"[{index}] Solving Turnstile (Backend Patchright)...")
+            cf_token = await turnstile.solve()
+            logger.info(f"[{index}] Turnstile solved ✅")
+
+            logger.info(f"[{index}] Sending OTP to {email}...")
             await send_otp(email, cf_token)
             logger.info(f"[{index}] OTP sent → waiting for email...")
 
@@ -267,17 +269,13 @@ async def create_one(index: int, cf_token: str) -> dict | None:
             return None
 
 
-async def run_batch(count: int, cf_token: str) -> None:
+async def run_batch(count: int) -> None:
     _job_status.update({
         "running": True, "total": count, "done": 0,
         "failed": 0, "started_at": time.time(), "last_error": None,
     })
     logger.info(f"Batch started: {count} account(s)")
-
-    # First account uses the provided CF token
-    # Additional accounts: reuse same token (may work within ~2 min window)
-    # For count>1, each gets same token — server-side re-solve not needed if done fast
-    results = await asyncio.gather(*[create_one(i + 1, cf_token) for i in range(count)])
+    results = await asyncio.gather(*[create_one(i + 1) for i in range(count)])
 
     for r in results:
         if r: _job_status["done"] += 1
@@ -304,7 +302,6 @@ async def health():
 
 class CreateRequest(BaseModel):
     count: int = 1
-    cf_token: str  # Required — solved by user's browser
 
 
 @app.post("/create")
@@ -313,9 +310,7 @@ async def create(req: CreateRequest, bg: BackgroundTasks):
         raise HTTPException(409, "Job already running.")
     if not (1 <= req.count <= 20):
         raise HTTPException(400, "count must be 1–20")
-    if not req.cf_token or len(req.cf_token) < 20:
-        raise HTTPException(400, "cf_token missing or invalid")
-    bg.add_task(run_batch, req.count, req.cf_token)
+    bg.add_task(run_batch, req.count)
     return {"message": f"Started creating {req.count} account(s)", "check": "/health"}
 
 
