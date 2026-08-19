@@ -31,17 +31,19 @@ def set_active_page(page):
     _active_page = page
 
 
-# Chromium flags for Docker/Linux. 2GB RAM — no memory hacks.
-# nodriver auto-adds: --no-sandbox (root), --headless=new, --remote-debugging-port, CDP flags.
+# Chromium flags for Docker/Linux on Xvfb (:99). 2GB RAM — no memory hacks.
+# headless=False → Chromium runs on Xvfb virtual display (DISPLAY=:99 in Dockerfile).
+# This avoids the --headless=new flag which Cloudflare Turnstile detects as bot.
+# nodriver auto-adds: --no-sandbox (root), --remote-debugging-port, CDP flags.
 _CHROMIUM_ARGS = [
     "--no-zygote",
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--disable-software-rasterizer",
-    "--disable-extensions",
     "--window-size=1280,800",
     "--hide-scrollbars",
     "--mute-audio",
+    "--disable-blink-features=AutomationControlled",
 ]
 
 _CHROME_PATHS = [
@@ -102,7 +104,7 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=True,
+        headless=False,          # Use Xvfb display (DISPLAY=:99) — avoids headless detection
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
