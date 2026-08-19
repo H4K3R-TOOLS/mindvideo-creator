@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from api.mindvideo        import send_otp, register, _random_device_id, _fvt_timestamp, _random_name
 from email_service.mailsac import random_address, wait_for_otp
-from solver               import sign
+from solver               import turnstile, sign
 
 PORT        = int(os.getenv("PORT", "8000"))
 THREADS     = int(os.getenv("THREADS", "1"))
