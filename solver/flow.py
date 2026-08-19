@@ -1,6 +1,6 @@
 # Python 3.11 | solver/flow.py
-# Autonomous Browser Registration Flow using nodriver (Raw CDP — Zero WebDriver Footprint)
-# Bypasses Cloudflare Turnstile anti-bot detection without webdriver artifacts.
+# Purpose: Autonomous Browser Registration Flow using nodriver (Raw CDP)
+# Based on official nodriver documentation & quickstart patterns
 
 import asyncio
 import logging
@@ -47,17 +47,18 @@ def _find_browser_path():
             return p
     return None
 
-async def _save_screen(page):
+async def _save_screen(tab):
     try:
-        await page.save_screenshot(SCREENSHOT_PATH)
+        if tab:
+            await tab.save_screenshot(SCREENSHOT_PATH)
     except Exception:
         pass
 
 async def create_account_browser(index: int) -> dict:
     """
-    Automates the full registration on mindvideo.ai/auth/signup/ using nodriver (raw CDP).
+    Automates the full registration on mindvideo.ai/auth/signup/ using official nodriver methods.
     """
-    # 1. Provision clean inbox via mail.tm
+    # 1. Provision clean disposable inbox via mail.tm
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
     nickname = "user" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -65,7 +66,7 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Starting registration: email={email}, nickname={nickname}")
 
     browser_bin = _find_browser_path()
-    logger.info(f"[{index}] [nodriver] Launching browser binary: {browser_bin or 'auto-detected'}")
+    logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
         headless=HEADLESS,
@@ -75,84 +76,84 @@ async def create_account_browser(index: int) -> dict:
     )
     
     try:
-        page = await browser.get(SIGNUP_URL)
-        set_active_page(page)
+        tab = await browser.get(SIGNUP_URL)
+        set_active_page(tab)
         
         logger.info(f"[{index}] [nodriver] Navigated to {SIGNUP_URL}")
-        await page.sleep(2.0)
-        await _save_screen(page)
+        await tab.sleep(2.0)
+        await _save_screen(tab)
 
-        # ── Step 0: Fill ALL 3 required fields ───────────────────────────────
+        # ── Step 0: Fill Form Inputs ─────────────────────────────────────────
         logger.info(f"[{index}] [nodriver] Filling Step 0 fields...")
 
-        # 1. Email
-        email_input = await page.select("input#email, input[placeholder*='email' i]")
+        # 1. Email field
+        email_input = await tab.select("input[type=email], input#email, input[placeholder*='email' i]")
         if email_input:
             await email_input.send_keys(email)
-            await page.sleep(0.3)
+            await tab.sleep(0.3)
 
-        # 2. Nickname
-        nick_input = await page.select("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]")
+        # 2. Nickname field
+        nick_input = await tab.select("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]")
         if nick_input:
             await nick_input.send_keys(nickname)
-            await page.sleep(0.3)
+            await tab.sleep(0.3)
 
-        # 3. Password
-        pass_input = await page.select("input#password, input[type='password']")
+        # 3. Password field
+        pass_input = await tab.select("input[type=password], input#password")
         if pass_input:
             await pass_input.send_keys(password)
-            await page.sleep(0.5)
+            await tab.sleep(0.5)
 
-        await _save_screen(page)
+        await _save_screen(tab)
 
-        # 4. Click Continue submit button
+        # 4. Click Submit / Continue button
         logger.info(f"[{index}] [nodriver] Submitting Step 0 form...")
-        submit_btn = await page.select("button[type='submit'], .ant-btn")
+        submit_btn = await tab.find("Continue", best_match=True)
+        if not submit_btn:
+            submit_btn = await tab.select("button[type=submit], .ant-btn")
         if submit_btn:
             await submit_btn.click()
 
-        # ── Solve Turnstile Widget ────────────────────────────────────────────
+        # ── Step 0: Solve Turnstile ───────────────────────────────────────────
         logger.info(f"[{index}] [nodriver] Waiting for Turnstile widget...")
-        await page.sleep(2.5)
-        await _save_screen(page)
+        await tab.sleep(2.5)
+        await _save_screen(tab)
 
         turnstile_passed = False
         has_clicked = False
 
         for attempt in range(50):
-            await page.sleep(0.8)
-            await _save_screen(page)
+            await tab.sleep(0.8)
+            await _save_screen(tab)
 
-            # Check if Step 1 (verificationCode) appeared
-            code_input = await page.select("input#verificationCode, input[placeholder*='code' i]")
+            # Check if Step 1 (verification code input) appeared
+            code_input = await tab.select("input#verificationCode, input[placeholder*='code' i]")
             if code_input:
-                logger.info(f"[{index}] ✅ [nodriver] Step 1 reached — OTP input visible!")
+                logger.info(f"[{index}] ✅ [nodriver] Step 1 reached — OTP verification input visible!")
                 turnstile_passed = True
                 break
 
-            # If not yet clicked, search for Turnstile elements
             if not has_clicked:
                 try:
-                    # Search text or selector across shadow DOM / iframes
-                    target = await page.find("Verify you are human")
-                    if not target:
-                        target = await page.select("input[type='checkbox'], .cf-turnstile, #turnstile-container")
+                    # Look for Turnstile checkbox via find or select
+                    turnstile_elem = await tab.find("Verify you are human", best_match=True)
+                    if not turnstile_elem:
+                        turnstile_elem = await tab.select("input[type=checkbox], .cf-turnstile, #turnstile-container")
                     
-                    if target:
-                        logger.info(f"[{index}] [nodriver] Found Turnstile element — clicking...")
-                        await page.sleep(0.5)
-                        await target.click()
+                    if turnstile_elem:
+                        logger.info(f"[{index}] [nodriver] Found Turnstile element — dispatching mouse click...")
+                        await tab.sleep(0.5)
+                        await turnstile_elem.mouse_click()
                         has_clicked = True
                         logger.info(f"[{index}] ✅ [nodriver] Clicked Turnstile widget [attempt {attempt+1}]")
-                        await _save_screen(page)
+                        await _save_screen(tab)
                 except Exception as e:
-                    logger.debug(f"Turnstile find/click error: {e}")
+                    logger.debug(f"Turnstile click exception: {e}")
 
         if not turnstile_passed:
-            # Fallback: check one more time if verification code input is visible
-            code_input = await page.select("input#verificationCode, input[placeholder*='code' i]")
+            code_input = await tab.select("input#verificationCode, input[placeholder*='code' i]")
             if not code_input:
-                await _save_screen(page)
+                await _save_screen(tab)
                 raise RuntimeError("Turnstile did not complete in nodriver.")
 
         # ── Step 1: Read OTP from mail.tm and enter verification code ─────────
@@ -160,21 +161,23 @@ async def create_account_browser(index: int) -> dict:
         otp_code = await mailtm.wait_for_otp(email, mail_token, timeout=90)
         logger.info(f"[{index}] [nodriver] Acquired OTP code: {otp_code}")
 
-        # Fill OTP in the verification code input
-        code_input = await page.select("input#verificationCode, input[placeholder*='code' i]")
+        # Fill OTP
+        code_input = await tab.select("input#verificationCode, input[placeholder*='code' i]")
         if code_input:
             await code_input.send_keys(otp_code)
-            await page.sleep(0.4)
-            await _save_screen(page)
+            await tab.sleep(0.4)
+            await _save_screen(tab)
 
         # Submit final Step 1 (Register)
         logger.info(f"[{index}] [nodriver] Submitting final registration...")
-        submit_btn = await page.select("button[type='submit'], .ant-btn")
+        submit_btn = await tab.find("Register", best_match=True)
+        if not submit_btn:
+            submit_btn = await tab.select("button[type=submit], .ant-btn")
         if submit_btn:
             await submit_btn.click()
 
-        await page.sleep(3.0)
-        await _save_screen(page)
+        await tab.sleep(3.0)
+        await _save_screen(tab)
         logger.info(f"[{index}] ✅ [nodriver] Registration successfully completed for: {email}")
 
         return {
@@ -185,6 +188,6 @@ async def create_account_browser(index: int) -> dict:
     finally:
         set_active_page(None)
         try:
-            await browser.stop()
+            browser.stop()
         except Exception:
             pass
