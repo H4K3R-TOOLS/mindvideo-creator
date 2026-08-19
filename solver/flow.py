@@ -1,6 +1,6 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
-# Direct page.frames Cloudflare Turnstile Clicker + Live visual preview
+# Multi-Layer High-Precision Turnstile Clicker + Cerebras AI Diagnostics
 
 import asyncio
 import logging
@@ -9,6 +9,7 @@ import random
 import string
 from patchright.async_api import async_playwright
 from email_service import mailtm
+from solver.ai import analyze_status
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,11 @@ async def _save_screen(page, cursor_pos=None):
                     if (!c) {{
                         c = document.createElement('div');
                         c.id = '_v_cursor';
-                        c.style.cssText = 'position:fixed;width:14px;height:14px;background:#ff0055;border:2px solid #fff;border-radius:50%;z-index:9999999;pointer-events:none;box-shadow:0 0 8px #ff0055;';
+                        c.style.cssText = 'position:fixed;width:16px;height:16px;background:#ff0055;border:2px solid #fff;border-radius:50%;z-index:9999999;pointer-events:none;box-shadow:0 0 10px #ff0055;';
                         document.body.appendChild(c);
                     }}
-                    c.style.left = '{x - 7}px';
-                    c.style.top = '{y - 7}px';
+                    c.style.left = '{x - 8}px';
+                    c.style.top = '{y - 8}px';
                 }})()
             """)
         await page.screenshot(path=SCREENSHOT_PATH)
@@ -158,43 +159,39 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # If not yet clicked, check all loaded frames for Turnstile
             if not has_clicked:
-                for frame in page.frames:
-                    if any(k in frame.url for k in ["challenges.cloudflare.com", "turnstile", "cdn-cgi"]):
-                        try:
-                            # Target clickable elements inside the challenge frame
-                            cb = frame.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, label, body").first
-                            if await cb.count() > 0:
-                                # Get position for visual cursor
-                                container = await page.query_selector("#turnstile-container")
-                                if container:
-                                    c_box = await container.bounding_box()
-                                    if c_box:
-                                        await _save_screen(page, (c_box["x"] + 28, c_box["y"] + c_box["height"]/2))
-                                
-                                await cb.click(timeout=1500, force=True)
-                                logger.info(f"[{index}] ✅ Successfully clicked Turnstile inside frame ({frame.url[:50]}...) [attempt {attempt+1}]")
-                                has_clicked = True
-                                break
-                        except Exception as e:
-                            logger.debug(f"Frame click error: {e}")
+                # 1. Check for iframe element on page
+                iframe_el = await page.query_selector("#turnstile-container iframe, iframe[src*='challenges'], iframe")
+                if iframe_el:
+                    box = await iframe_el.bounding_box()
+                    if box and box["width"] > 50 and box["height"] > 20:
+                        # Target exact checkbox center inside the white box
+                        click_x = box["x"] + 28
+                        click_y = box["y"] + box["height"] / 2
 
-                # Fallback: container coordinate click
-                if not has_clicked:
-                    try:
-                        container = await page.query_selector("#turnstile-container")
-                        if container:
-                            box = await container.bounding_box()
-                            if box and box["width"] > 50 and box["height"] > 20:
-                                click_x = box["x"] + 28
-                                click_y = box["y"] + box["height"] / 2
-                                await _save_screen(page, (click_x, click_y))
-                                await page.mouse.click(click_x, click_y)
-                                logger.info(f"[{index}] Fallback clicked container at ({int(click_x)}, {int(click_y)})")
-                                has_clicked = True
-                    except Exception:
-                        pass
+                        # Focus iframe and move mouse with realistic curve
+                        await page.evaluate("() => { const f = document.querySelector('iframe'); if (f) f.focus(); }")
+                        await _save_screen(page, (click_x, click_y))
+                        await page.mouse.move(click_x, click_y, steps=8)
+                        await asyncio.sleep(0.1)
+
+                        # Mouse down, small hold, mouse up
+                        await page.mouse.down()
+                        await asyncio.sleep(0.12)
+                        await page.mouse.up()
+
+                        # Also trigger internal frame locator click
+                        try:
+                            fl = page.frame_locator("#turnstile-container iframe, iframe").first
+                            cb = fl.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
+                            if await cb.count() > 0:
+                                await cb.click(timeout=1000, force=True)
+                        except Exception:
+                            pass
+
+                        logger.info(f"[{index}] ✅ Clicked Turnstile checkbox at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
+                        has_clicked = True
+                        await _save_screen(page, (click_x, click_y))
             else:
                 await _save_screen(page)
 
