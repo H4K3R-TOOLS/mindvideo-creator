@@ -37,12 +37,16 @@ _CHROMIUM_ARGS = [
     "--disable-blink-features=AutomationControlled",
 ]
 
-async def solve(timeout_seconds: int = 60) -> str:
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+async def solve(timeout_seconds: int = 60) -> tuple[str, str]:
     """
     Solves Cloudflare Turnstile purely in the backend using patchright.
-    1. Intercepts TARGET_URL with route fulfill (domain-authentic html).
-    2. Clicks the Turnstile checkbox autonomously.
-    3. Reads token from [name=cf-turnstile-response].
+    Returns tuple: (token, user_agent)
     """
     logger.info("Launching backend patchright browser for Turnstile solve...")
     async with async_playwright() as pw:
@@ -51,11 +55,7 @@ async def solve(timeout_seconds: int = 60) -> str:
             args=_CHROMIUM_ARGS,
         )
         context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
+            user_agent=USER_AGENT,
             locale="en-US",
             viewport={"width": 1280, "height": 720},
         )
@@ -109,4 +109,4 @@ async def solve(timeout_seconds: int = 60) -> str:
         if not token:
             raise TimeoutError(f"Turnstile solve failed after {timeout_seconds}s ({attempts} attempts)")
 
-        return token
+        return token, USER_AGENT

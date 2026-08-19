@@ -216,12 +216,12 @@ async def create_one(index: int) -> dict | None:
 
             # 2. Solve Turnstile
             logger.info(f"[{index}] Solving Turnstile (Backend Patchright)...")
-            cf_token = await turnstile.solve()
+            cf_token, user_agent = await turnstile.solve()
             logger.info(f"[{index}] Turnstile solved ✅")
 
             # 3. Send OTP
             logger.info(f"[{index}] Sending OTP to {email}...")
-            await send_otp(email, cf_token)
+            await send_otp(email, cf_token, user_agent=user_agent)
             logger.info(f"[{index}] OTP sent → waiting for email...")
 
             # 4. Read OTP & generate WASM i-sign concurrently
@@ -237,6 +237,7 @@ async def create_one(index: int) -> dict | None:
             result = await register(
                 email=email, otp=otp, i_sign=i_sign,
                 device_id=device_id, fvt=fvt, name=name,
+                user_agent=user_agent,
             )
             with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{result['email']}:{result['password']}\n")

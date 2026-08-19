@@ -57,7 +57,7 @@ def _random_name() -> str:
     return f"user{suffix}"
 
 
-async def send_otp(email: str, cf_token: str) -> None:
+async def send_otp(email: str, cf_token: str, user_agent: str | None = None) -> None:
     """
     POST /api/send-mail-code
     Triggers OTP email. No i-sign needed on this endpoint.
@@ -68,11 +68,15 @@ async def send_otp(email: str, cf_token: str) -> None:
         "cf_challenge_token": cf_token,
         "type":               "register",
     }
+    headers = {**_COMMON}
+    if user_agent:
+        headers["User-Agent"] = user_agent
+
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             f"{API_BASE}/api/send-mail-code",
             json=payload,
-            headers=_COMMON,
+            headers=headers,
         )
         if r.status_code != 200:
             logger.error(f"send_otp failed [{r.status_code}]: {r.text}")
@@ -88,6 +92,7 @@ async def register(
     fvt: str,
     name: str | None = None,
     password_raw: str | None = None,
+    user_agent: str | None = None,
 ) -> dict:
     """
     POST /api/register
@@ -117,6 +122,8 @@ async def register(
         "UTM-Term":    "unknow",
         "i-sign":      i_sign,
     }
+    if user_agent:
+        headers["User-Agent"] = user_agent
 
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
