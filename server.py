@@ -111,21 +111,10 @@ _DASHBOARD = """<!DOCTYPE html>
 <div class="card">
   <h2>Create Accounts</h2>
 
-  <!-- Turnstile widget — solved in YOUR browser (residential IP) -->
-  <div id="cf-wrap">
-    <div class="cf-turnstile"
-         data-sitekey="SITEKEY_PLACEHOLDER"
-         data-callback="onTokenReady"
-         data-expired-callback="onTokenExpired"
-         data-theme="dark">
-    </div>
-    <div id="token-status" class="tok-wait">⏳ Waiting for Turnstile...</div>
-  </div>
-
   <div class="row">
     <label>Count:</label>
     <input type="number" id="count" value="1" min="1" max="20"/>
-    <button id="btn-create" disabled onclick="createAccounts()">▶ RUN</button>
+    <button id="btn-create" onclick="createAccounts()">▶ RUN</button>
     <button id="btn-accounts" onclick="toggleAccounts()">📋 ACCOUNTS</button>
   </div>
   <div id="accounts-box"></div>
@@ -137,27 +126,11 @@ _DASHBOARD = """<!DOCTYPE html>
 </div>
 
 <script>
-let _cfToken = null;
 const logBox = document.getElementById('log-box');
 let autoScroll = true;
 logBox.addEventListener('scroll', () => {
   autoScroll = logBox.scrollTop + logBox.clientHeight >= logBox.scrollHeight - 20;
 });
-
-function onTokenReady(token) {
-  _cfToken = token;
-  document.getElementById('token-status').innerHTML = '<span class="tok-ok">✅ Turnstile solved — ready to create</span>';
-  updateBtn();
-}
-function onTokenExpired() {
-  _cfToken = null;
-  document.getElementById('token-status').innerHTML = '<span class="tok-wait">⏳ Token expired — refreshing...</span>';
-  updateBtn();
-}
-function updateBtn() {
-  const running = document.getElementById('btn-create').dataset.running === '1';
-  document.getElementById('btn-create').disabled = !_cfToken || running;
-}
 
 function appendLog(line) {
   const div = document.createElement('div');
@@ -193,9 +166,8 @@ async function pollHealth() {
     document.getElementById('s-saved').textContent = d.accounts_saved;
     document.getElementById('s-err').textContent = j.last_error || '';
     const btn = document.getElementById('btn-create');
-    btn.dataset.running = j.running ? '1' : '0';
+    btn.disabled = j.running;
     btn.textContent = j.running ? '⏳ RUNNING...' : '▶ RUN';
-    updateBtn();
   } catch(e){}
 }
 pollHealth(); setInterval(pollHealth, 3000);
