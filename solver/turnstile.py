@@ -23,8 +23,6 @@ _CHROMIUM_ARGS = [
     "--disable-gpu",
     "--disable-software-rasterizer",
     "--disable-blink-features=AutomationControlled",
-    "--no-zygote",
-    "--single-process",
 ]
 
 # JS: hook Turnstile global callback to capture token as soon as it fires

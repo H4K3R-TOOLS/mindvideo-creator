@@ -1,11 +1,14 @@
 # Python 3.11 | server.py
-# Purpose: FastAPI web server — exposes account creation as HTTP endpoints
-# Port: 8000 (set via PORT env var)
-# Endpoints:
-#   GET  /          → health check
-#   GET  /health    → status + accounts count
-#   POST /create    → create N accounts (body: {"count": 1})
-#   GET  /accounts  → list all created accounts
+# Purpose: FastAPI web server — dashboard UI + HTTP API + live log streaming
+# Port: 8000
+# Routes:
+#   GET  /           → HTML dashboard (create button + live logs)
+#   GET  /health     → JSON status
+#   POST /create     → start account creation job
+#   GET  /accounts   → JSON list
+#   GET  /accounts/raw → plain text email:pass
+#   GET  /logs       → plain text last 100 log lines
+#   GET  /stream     → SSE live log stream
 
 import asyncio
 import logging
@@ -17,28 +20,32 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from api.mindvideo       import send_otp, register, _random_device_id, _fvt_timestamp, _random_name
+from api.mindvideo        import send_otp, register, _random_device_id, _fvt_timestamp, _random_name
 from email_service.mailsac import random_address, wait_for_otp
-from solver              import turnstile, sign
+from solver               import turnstile, sign
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT        = int(os.getenv("PORT", "8000"))
 THREADS     = int(os.getenv("THREADS", "1"))
-OUTPUT_FILE = os.getenv("OUTPUT_FILE", "accounts.txt")
+OUTPUT_FILE = os.getenv("OUTPUT_FILE", "/app/accounts.txt")
 API_URL     = "https://api-app.mindvideo.ai/api/register"
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE    = os.path.join(BASE_DIR, "logs", "creator.log")
 
-os.makedirs("logs", exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/creator.log", encoding="utf-8"),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
     ],
+    force=True,
 )
 logger = logging.getLogger("server")
 
@@ -50,70 +57,239 @@ _job_status: dict = {
     "started_at": None, "last_error": None,
 }
 
+# ── HTML Dashboard ─────────────────────────────────────────────────────────────
+_DASHBOARD = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>MindVideo Creator</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d0d;color:#e0e0e0;font-family:'Courier New',monospace;padding:24px}
+  h1{color:#00ff88;font-size:20px;margin-bottom:20px;letter-spacing:2px}
+  .card{background:#161616;border:1px solid #2a2a2a;border-radius:8px;padding:20px;margin-bottom:16px}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  label{color:#888;font-size:13px;margin-right:6px}
+  input[type=number]{background:#0d0d0d;border:1px solid #333;color:#fff;
+    padding:8px 12px;border-radius:4px;font-family:monospace;width:80px;font-size:14px}
+  button{padding:9px 22px;border:none;border-radius:4px;font-family:monospace;
+    font-size:14px;cursor:pointer;font-weight:bold;transition:.15s}
+  #btn-create{background:#00ff88;color:#000}
+  #btn-create:hover{background:#00cc6a}
+  #btn-create:disabled{background:#2a2a2a;color:#555;cursor:not-allowed}
+  #btn-accounts{background:#1a1a2e;color:#7eb6ff;border:1px solid #334}
+  #btn-accounts:hover{background:#252550}
+  .stat{background:#0d0d0d;border:1px solid #222;border-radius:4px;
+    padding:8px 14px;font-size:13px;display:inline-block;margin-right:8px;margin-bottom:6px}
+  .stat span{color:#00ff88;font-weight:bold}
+  .badge-run{color:#ffcc00} .badge-ok{color:#00ff88} .badge-fail{color:#ff4444}
+  #log-box{background:#000;border:1px solid #1a1a1a;border-radius:6px;
+    height:440px;overflow-y:auto;padding:14px;font-size:12px;line-height:1.6;
+    white-space:pre-wrap;word-break:break-all}
+  .log-info{color:#aaa} .log-error{color:#ff5555} .log-warn{color:#ffaa00}
+  .log-ok{color:#00ff88} .log-ts{color:#555}
+  #accounts-box{display:none;background:#000;border:1px solid #1a1a1a;border-radius:6px;
+    padding:14px;max-height:300px;overflow-y:auto;font-size:13px;margin-top:12px}
+  .acc-line{color:#7eb6ff;padding:3px 0;border-bottom:1px solid #111}
+  .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+  .dot-ok{background:#00ff88} .dot-run{background:#ffcc00;animation:pulse 1s infinite}
+  .dot-idle{background:#444}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  h2{font-size:14px;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<h1>⚡ MINDVIDEO ACCOUNT CREATOR</h1>
 
-# ── Account creation logic ────────────────────────────────────────────────────
+<div class="card">
+  <h2>Status</h2>
+  <div id="stats">
+    <div class="stat">Status: <span id="s-status">—</span></div>
+    <div class="stat">Done: <span id="s-done">0</span></div>
+    <div class="stat">Failed: <span id="s-failed">0</span></div>
+    <div class="stat">Saved: <span id="s-saved">0</span></div>
+    <div class="stat">Last Error: <span id="s-err" style="color:#ff5555">—</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Create Accounts</h2>
+  <div class="row">
+    <label>Count:</label>
+    <input type="number" id="count" value="1" min="1" max="50"/>
+    <button id="btn-create" onclick="createAccounts()">▶ RUN</button>
+    <button id="btn-accounts" onclick="toggleAccounts()">📋 ACCOUNTS</button>
+  </div>
+  <div id="accounts-box"></div>
+</div>
+
+<div class="card">
+  <h2>Live Logs <span id="stream-status" style="font-size:11px;color:#555"></span></h2>
+  <div id="log-box"></div>
+</div>
+
+<script>
+const logBox = document.getElementById('log-box');
+let autoScroll = true;
+
+logBox.addEventListener('scroll', () => {
+  autoScroll = logBox.scrollTop + logBox.clientHeight >= logBox.scrollHeight - 20;
+});
+
+function appendLog(line) {
+  const div = document.createElement('div');
+  let cls = 'log-info';
+  if (line.includes('[ERROR]')) cls = 'log-error';
+  else if (line.includes('[WARNING]')) cls = 'log-warn';
+  else if (line.includes('✅') || line.includes('Done')) cls = 'log-ok';
+  // color timestamp grey
+  const colored = line.replace(
+    /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+)/,
+    '<span class="log-ts">$1</span>'
+  );
+  div.className = cls;
+  div.innerHTML = colored;
+  logBox.appendChild(div);
+  if (autoScroll) logBox.scrollTop = logBox.scrollHeight;
+}
+
+// SSE live stream
+function connectStream() {
+  const es = new EventSource('/stream');
+  document.getElementById('stream-status').textContent = '● live';
+  es.onmessage = e => { if(e.data && e.data !== 'ping') appendLog(e.data); };
+  es.onerror = () => {
+    document.getElementById('stream-status').textContent = '○ reconnecting...';
+    es.close();
+    setTimeout(connectStream, 3000);
+  };
+}
+connectStream();
+
+// Poll health every 3s
+async function pollHealth() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const j = d.job;
+    const running = j.running;
+    document.getElementById('s-status').innerHTML =
+      running ? '<span class="badge-run">● RUNNING</span>'
+              : (j.failed > 0 ? '<span class="badge-fail">● FAILED</span>'
+                              : '<span class="badge-ok">● IDLE</span>');
+    document.getElementById('s-done').textContent = j.done;
+    document.getElementById('s-failed').textContent = j.failed;
+    document.getElementById('s-saved').textContent = d.accounts_saved;
+    document.getElementById('s-err').textContent = j.last_error || '—';
+    const btn = document.getElementById('btn-create');
+    btn.disabled = running;
+    btn.textContent = running ? '⏳ RUNNING...' : '▶ RUN';
+  } catch(e) {}
+}
+pollHealth();
+setInterval(pollHealth, 3000);
+
+async function createAccounts() {
+  const count = parseInt(document.getElementById('count').value) || 1;
+  const btn = document.getElementById('btn-create');
+  btn.disabled = true;
+  btn.textContent = '⏳ RUNNING...';
+  try {
+    const r = await fetch('/create', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({count})
+    });
+    const d = await r.json();
+    appendLog('>>> ' + JSON.stringify(d));
+  } catch(e) {
+    appendLog('>>> Error: ' + e);
+  }
+}
+
+async function toggleAccounts() {
+  const box = document.getElementById('accounts-box');
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  const r = await fetch('/accounts');
+  const d = await r.json();
+  box.innerHTML = d.accounts.length
+    ? d.accounts.map(a => `<div class="acc-line">${a}</div>`).join('')
+    : '<div style="color:#555">No accounts yet</div>';
+  box.style.display = 'block';
+}
+</script>
+</body>
+</html>"""
+
+
+# ── Account creation ───────────────────────────────────────────────────────────
 async def create_one(index: int) -> dict | None:
     async with _sem:
         email     = random_address()
         device_id = _random_device_id()
         fvt       = _fvt_timestamp()
         name      = _random_name()
-        logger.info(f"[{index}] → {email}")
+        logger.info(f"[{index}] Starting → {email}")
         try:
+            logger.info(f"[{index}] Solving Turnstile...")
             cf_token = await turnstile.solve()
-            await send_otp(email, cf_token)
+            logger.info(f"[{index}] Turnstile solved ✅")
 
-            body_for_sign = {"email": email, "password": "", "verify_token": "", "name": name, "code": ""}
+            logger.info(f"[{index}] Sending OTP to {email}...")
+            await send_otp(email, cf_token)
+            logger.info(f"[{index}] OTP sent, waiting for email...")
+
+            body_for_sign = {
+                "email": email, "password": "", "verify_token": "", "name": name, "code": ""
+            }
             otp_task  = asyncio.create_task(wait_for_otp(email))
             sign_task = asyncio.create_task(sign.generate(API_URL, body_for_sign))
             otp, i_sign = await asyncio.gather(otp_task, sign_task)
+            logger.info(f"[{index}] OTP={otp} | i-sign ready")
 
             result = await register(
                 email=email, otp=otp, i_sign=i_sign,
                 device_id=device_id, fvt=fvt, name=name,
             )
-            # Save to file
             with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{result['email']}:{result['password']}\n")
-            logger.info(f"[{index}] ✅ {email}")
+            logger.info(f"[{index}] ✅ Account created: {email}")
             return result
         except Exception as e:
-            logger.error(f"[{index}] ❌ {e}")
+            logger.error(f"[{index}] ❌ Failed: {e}")
             _job_status["last_error"] = str(e)
             return None
 
 
 async def run_batch(count: int) -> None:
-    _job_status.update({"running": True, "total": count, "done": 0, "failed": 0, "started_at": time.time()})
-    tasks = [create_one(i + 1) for i in range(count)]
-    results = await asyncio.gather(*tasks)
+    _job_status.update({
+        "running": True, "total": count, "done": 0,
+        "failed": 0, "started_at": time.time(), "last_error": None,
+    })
+    logger.info(f"Batch started: {count} account(s)")
+    results = await asyncio.gather(*[create_one(i + 1) for i in range(count)])
     for r in results:
-        if r:
-            _job_status["done"] += 1
-        else:
-            _job_status["failed"] += 1
+        if r: _job_status["done"] += 1
+        else: _job_status["failed"] += 1
     _job_status["running"] = False
-    logger.info(f"Batch done — {_job_status['done']}/{count} success")
+    logger.info(f"Batch done — {_job_status['done']}/{count} success, {_job_status['failed']} failed")
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-@app.get("/")
-async def root():
-    return {"service": "MindVideo Account Creator", "status": "live"}
+# ── Routes ─────────────────────────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    return _DASHBOARD
 
 
 @app.get("/health")
 async def health():
     try:
         with open(OUTPUT_FILE, "r") as f:
-            total_accounts = sum(1 for _ in f)
+            saved = sum(1 for _ in f)
     except FileNotFoundError:
-        total_accounts = 0
-    return {
-        "status":         "ok",
-        "accounts_saved": total_accounts,
-        "job":            _job_status,
-    }
+        saved = 0
+    return {"status": "ok", "accounts_saved": saved, "job": _job_status}
 
 
 class CreateRequest(BaseModel):
@@ -123,9 +299,9 @@ class CreateRequest(BaseModel):
 @app.post("/create")
 async def create(req: CreateRequest, bg: BackgroundTasks):
     if _job_status["running"]:
-        raise HTTPException(status_code=409, detail="A job is already running. Check /health.")
-    if req.count < 1 or req.count > 50:
-        raise HTTPException(status_code=400, detail="count must be 1–50")
+        raise HTTPException(409, "Job already running. Check /health.")
+    if not (1 <= req.count <= 50):
+        raise HTTPException(400, "count must be 1–50")
     bg.add_task(run_batch, req.count)
     return {"message": f"Started creating {req.count} account(s)", "check": "/health"}
 
@@ -140,16 +316,6 @@ async def list_accounts():
         return {"count": 0, "accounts": []}
 
 
-@app.get("/logs", response_class=PlainTextResponse)
-async def get_logs():
-    try:
-        with open("logs/creator.log", "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        return "".join(lines[-100:])   # last 100 lines
-    except FileNotFoundError:
-        return "No logs yet."
-
-
 @app.get("/accounts/raw", response_class=PlainTextResponse)
 async def accounts_raw():
     try:
@@ -159,6 +325,47 @@ async def accounts_raw():
         return ""
 
 
-# ── Entry ─────────────────────────────────────────────────────────────────────
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs():
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            return "".join(f.readlines()[-100:])
+    except FileNotFoundError:
+        return "No logs yet."
+
+
+@app.get("/stream")
+async def stream_logs(request: Request):
+    """SSE endpoint — streams new log lines to the browser in real-time."""
+    async def event_gen():
+        # Send existing tail first
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            for line in lines[-40:]:
+                yield f"data: {line.rstrip()}\n\n"
+        except FileNotFoundError:
+            pass
+
+        # Then tail new lines
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                f.seek(0, 2)  # go to end
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    line = f.readline()
+                    if line:
+                        yield f"data: {line.rstrip()}\n\n"
+                    else:
+                        yield "data: ping\n\n"
+                        await asyncio.sleep(1)
+        except FileNotFoundError:
+            yield "data: Log file not found yet.\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+# ── Entry ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=PORT, loop="asyncio")
