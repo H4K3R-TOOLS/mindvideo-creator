@@ -1,13 +1,13 @@
 # Python 3.11 | solver/flow.py
-# Purpose: Autonomous Browser Registration Flow using nodriver (Raw CDP)
-# Based on official nodriver documentation & quickstart patterns
+# Purpose: Autonomous Browser Registration Flow using zendriver (nodriver fork, Docker-optimized)
+# zendriver is a drop-in replacement for nodriver with proper Docker/server headless support.
 
 import asyncio
 import logging
 import os
 import random
 import string
-import nodriver as uc
+import zendriver as uc
 from email_service import mailtm
 
 logger = logging.getLogger(__name__)
@@ -26,21 +26,15 @@ def set_active_page(page):
     global _active_page
     _active_page = page
 
-# headless=new + single-process: renderer runs inside the browser process itself,
-# no subprocess spawning — bypasses Render's /dev/shm container restrictions.
-# nodriver auto-detects root and adds --no-sandbox.
+# Docker-optimized Chromium flags.
+# --no-zygote: prevents zygote fork crash in Linux containers.
+# --single-process: avoids multi-process sandbox issues (Docker-safe).
+# zendriver auto-adds --no-sandbox for root, and its own CDP connection flags.
 _CHROMIUM_ARGS = [
+    "--no-zygote",
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--window-size=1280,800",
-    "--single-process",            # renderer in-process, no subprocess crash on Render
-    "--no-zygote",                 # disable zygote process spawner (docker-safe)
-    "--disable-extensions",
-    "--disable-plugins",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--memory-pressure-off",
     "--hide-scrollbars",
     "--mute-audio",
 ]
@@ -67,25 +61,25 @@ async def _save_screen(tab):
 
 async def create_account_browser(index: int) -> dict:
     """
-    Automates the full registration on mindvideo.ai/auth/signup/ using nodriver.
-    Uses --single-process + --no-zygote to run the renderer inside the browser process,
-    bypassing Render's /dev/shm restrictions that crash the renderer subprocess.
+    Automates full registration on mindvideo.ai/auth/signup/ using zendriver.
+    zendriver is a maintained fork of nodriver with proper Docker headless support
+    and fixed CDP connection handling for --headless=new in Linux containers.
     """
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
     nickname = "user" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    
-    logger.info(f"[{index}] [nodriver] Starting registration: email={email}, nickname={nickname}")
+
+    logger.info(f"[{index}] [zendriver] Starting registration: email={email}, nickname={nickname}")
 
     browser_bin = _find_browser_path()
-    logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
+    logger.info(f"[{index}] [zendriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=True,             # headless=new — correct for Chromium 112+
+        headless=True,
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
-    
+
     try:
         tab = await browser.get(SIGNUP_URL)
         set_active_page(tab)
