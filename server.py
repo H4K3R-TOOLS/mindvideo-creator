@@ -289,8 +289,23 @@ async def click_endpoint(payload: ClickPayload):
     page = get_active_page()
     if page:
         try:
-            await page.mouse.click(payload.x, payload.y)
-            logger.info(f"Interactive click dispatched at ({int(payload.x)}, {int(payload.y)})")
+            import nodriver.cdp.input_ as cdp_input
+            await page.send(cdp_input.dispatch_mouse_event(
+                type_="mousePressed",
+                x=float(payload.x),
+                y=float(payload.y),
+                button=cdp_input.MouseButton("left"),
+                click_count=1,
+            ))
+            await asyncio.sleep(0.08)
+            await page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseReleased",
+                x=float(payload.x),
+                y=float(payload.y),
+                button=cdp_input.MouseButton("left"),
+                click_count=1,
+            ))
+            logger.info(f"Interactive nodriver click dispatched at ({int(payload.x)}, {int(payload.y)})")
             return {"status": "ok", "x": payload.x, "y": payload.y}
         except Exception as e:
             return {"status": "error", "message": str(e)}

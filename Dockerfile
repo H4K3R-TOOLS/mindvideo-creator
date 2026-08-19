@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
-# ── Base tools & Xvfb virtual display ──────────────────────────────────────────
+# ── Base tools, Xvfb & Debian Chromium ─────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl wget gnupg ca-certificates xvfb xauth \
+    curl wget gnupg ca-certificates xvfb xauth chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 20 ────────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Chromium system deps (exact list playwright/patchright needs on debian) ───
+# ── Chromium system deps ──────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libnspr4 \
@@ -43,7 +43,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install patchright Chromium binary
+# Install patchright Chromium binary as well
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN python -m patchright install chromium
 
