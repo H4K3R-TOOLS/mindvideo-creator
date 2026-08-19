@@ -1,7 +1,7 @@
 # Python 3.11 | solver/flow.py
-# Purpose: Autonomous browser registration flow with humanized Turnstile solving
-# - Waits for Cloudflare Turnstile bundle & iframe to fully initialize before clicking
-# - Human trajectory mouse movement from Continue button to checkbox
+# Purpose: Autonomous browser registration flow with full virtual desktop rendering
+# - Headed Chromium via Xvfb virtual framebuffer (zero headless fingerprint anomalies)
+# - Human trajectory mouse movement + single clean checkbox click
 # - Real-time live visual streaming (red pointer overlay)
 
 import asyncio
@@ -15,7 +15,7 @@ from email_service import mailtm
 logger = logging.getLogger(__name__)
 
 SIGNUP_URL = "https://www.mindvideo.ai/auth/signup/"
-HEADLESS   = os.getenv("HEADLESS", "true").lower() == "true"
+HEADLESS   = os.getenv("HEADLESS", "false").lower() == "true"
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCREENSHOT_PATH = os.path.join(BASE_DIR, "screenshot.png")
 
@@ -23,7 +23,6 @@ _CHROMIUM_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-setuid-sandbox",
-    "--disable-gpu",
     "--disable-blink-features=AutomationControlled",
     "--window-size=1280,800",
 ]
@@ -59,9 +58,8 @@ async def _human_move_and_click(page, start_x, start_y, target_x, target_y, inde
     """
     Simulates human mouse curve trajectory from start to target, hovers, and clicks.
     """
-    steps = 15
+    steps = 12
     for i in range(1, steps + 1):
-        # Quadratic bezier curve with slight random deviation
         t = i / steps
         curr_x = (1 - t) * start_x + t * target_x + random.uniform(-1, 1)
         curr_y = (1 - t) * start_y + t * target_y + random.uniform(-1, 1)
@@ -69,14 +67,12 @@ async def _human_move_and_click(page, start_x, start_y, target_x, target_y, inde
         await _save_screen(page, (curr_x, curr_y))
         await asyncio.sleep(0.02)
 
-    # Hover over checkbox like a human
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(0.2)
     await _save_screen(page, (target_x, target_y))
 
-    # Mouse down, human press hold, mouse up
     logger.info(f"[{index}] Mouse DOWN on Turnstile checkbox at ({int(target_x)}, {int(target_y)})")
     await page.mouse.down()
-    await asyncio.sleep(0.14)
+    await asyncio.sleep(0.12)
     await page.mouse.up()
     logger.info(f"[{index}] Mouse UP — click completed")
     await _save_screen(page, (target_x, target_y))
@@ -167,19 +163,10 @@ async def create_account_browser(index: int) -> dict:
         await submit_btn.click()
 
         # ── Step 0 Turnstile: Wait for iframe readiness ───────────────────────
-        logger.info(f"[{index}] Waiting for Turnstile iframe to mount & initialize...")
-        
-        # Wait until the Cloudflare iframe is actually rendered in DOM
-        try:
-            await page.wait_for_selector("#turnstile-container iframe, iframe[src*='challenges']", timeout=15000)
-        except Exception:
-            logger.warning(f"[{index}] Iframe selector timeout — checking fallback container")
+        logger.info(f"[{index}] Waiting for Turnstile iframe...")
+        await asyncio.sleep(2.0)
 
-        # Give Cloudflare bundle 2.5s to finish handshake and register click handlers
-        logger.info(f"[{index}] Giving Turnstile 2.5s to finish handshake...")
-        await asyncio.sleep(2.5)
-
-        # Calculate exact rendered checkbox coordinates
+        # Calculate exact rendered checkbox coordinates using getBoundingClientRect
         coords = await page.evaluate("""
             () => {
                 const ifr = document.querySelector('#turnstile-container iframe') || document.querySelector('iframe');
