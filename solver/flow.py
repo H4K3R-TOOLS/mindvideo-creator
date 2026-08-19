@@ -1,7 +1,6 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
-# Patchright intercepts the Cloudflare Turnstile token callback from the REAL site
-# then directly calls send-mail-code API with the token — cleanest possible approach
+# Uses Playwright native bounding_box() on #turnstile-container + clicks top+20 (checkbox row)
 
 import asyncio
 import logging
@@ -54,10 +53,36 @@ async def _save_screen(page, cursor_pos=None):
     except Exception:
         pass
 
+async def _find_turnstile_checkbox(page) -> tuple[float, float] | None:
+    """
+    Returns (x, y) of the Turnstile checkbox [ ] in viewport coordinates.
+    Tries multiple selector strategies in order.
+    """
+    selectors = [
+        "#turnstile-container",
+        "div.cf-turnstile",
+        "[data-sitekey]",
+        "iframe",
+    ]
+    for sel in selectors:
+        try:
+            el = page.locator(sel).first
+            if await el.count() == 0:
+                continue
+            box = await el.bounding_box()
+            if box and box["width"] > 50 and box["height"] > 10:
+                # The checkbox [ ] is at the LEFT edge of the widget, top quarter
+                cx = box["x"] + 24          # 24px from left = checkbox center
+                cy = box["y"] + min(20, box["height"] * 0.35)  # top 35% = checkbox row
+                logger.info(f"Found via '{sel}': box=({int(box['x'])},{int(box['y'])},{int(box['width'])}x{int(box['height'])}) → click=({int(cx)},{int(cy)})")
+                return (cx, cy)
+        except Exception:
+            pass
+    return None
+
 async def create_account_browser(index: int) -> dict:
     """
     Automates the full native registration on mindvideo.ai/auth/signup/
-    Token is extracted by intercepting the site's own es() callback
     """
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
@@ -81,29 +106,32 @@ async def create_account_browser(index: int) -> dict:
         page.on("pageerror", lambda err: logger.error(f"[{index} PageError] {err}"))
 
         send_mail_result = {"status": None, "body": None}
-        token_future = asyncio.get_event_loop().create_future()
 
         async def handle_response(response):
             if "/api/send-mail-code" in response.url:
                 try:
                     send_mail_result["status"] = response.status
                     send_mail_result["body"] = await response.text()
-                    logger.info(f"[{index}] /api/send-mail-code: {response.status} -> {send_mail_result['body']}")
+                    logger.info(f"[{index}] /api/send-mail-code: {response.status} → {send_mail_result['body']}")
                 except Exception:
                     pass
 
         page.on("response", handle_response)
 
-        # ── Navigate and fill form ────────────────────────────────────────────
+        # ── Navigate ──────────────────────────────────────────────────────────
         logger.info(f"[{index}] Navigating to {SIGNUP_URL}...")
         await page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=45000)
         await asyncio.sleep(1.5)
         await _save_screen(page)
 
+        # ── Step 0: Fill ALL 3 required fields ────────────────────────────────
         logger.info(f"[{index}] Filling Step 0 fields...")
         
         email_input = page.locator("input#email, input[placeholder*='email' i]").first
         await email_input.wait_for(state="visible", timeout=15000)
+        e_box = await email_input.bounding_box()
+        if e_box:
+            await _save_screen(page, (e_box["x"] + 20, e_box["y"] + e_box["height"]/2))
         await email_input.click()
         await email_input.type(email, delay=15)
 
@@ -119,23 +147,7 @@ async def create_account_browser(index: int) -> dict:
         await page.keyboard.press("Tab")
         await _save_screen(page)
 
-        # ── Intercept the Turnstile token from the real page's callback ───────
-        # Inject JS to hijack the React onTokenUpdate prop callback
-        # When Turnstile solves, the site calls es(token) → sends to send-mail-code
-        # We intercept the XHR instead of needing to know the token ourselves
-        logger.info(f"[{index}] Injecting Turnstile token interceptor...")
-        await page.evaluate("""
-            () => {
-                // Override fetch globally to log when send-mail-code is called
-                const origFetch = window.fetch;
-                window.fetch = async function(...args) {
-                    const result = await origFetch.apply(this, args);
-                    return result;
-                };
-            }
-        """)
-
-        # ── Click Continue button ─────────────────────────────────────────────
+        # ── Submit Step 0 ─────────────────────────────────────────────────────
         logger.info(f"[{index}] Submitting Step 0 form...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
         s_box = await submit_btn.bounding_box()
@@ -145,68 +157,52 @@ async def create_account_browser(index: int) -> dict:
             await _save_screen(page, (sx, sy))
         await submit_btn.click()
 
-        # ── Wait for Cloudflare iframe to render and click the checkbox ────────
-        logger.info(f"[{index}] Waiting for Turnstile iframe render...")
+        # ── Wait for Turnstile widget to appear (wait for container to show) ──
+        logger.info(f"[{index}] Waiting for Turnstile widget to appear...")
+        # Wait until #turnstile-container becomes visible/non-empty
         try:
-            await page.wait_for_selector("iframe[src*='challenges.cloudflare.com']", timeout=10000)
+            await page.wait_for_function(
+                """() => {
+                    const c = document.querySelector('#turnstile-container, div.cf-turnstile, [data-sitekey]');
+                    if (!c) return false;
+                    const r = c.getBoundingClientRect();
+                    return r.width > 50 && r.height > 10;
+                }""",
+                timeout=12000,
+            )
+            logger.info(f"[{index}] Turnstile container visible!")
         except Exception:
-            logger.warning(f"[{index}] Challenge iframe wait timeout — trying fallback")
+            logger.warning(f"[{index}] Turnstile container wait timeout — proceeding anyway")
 
-        # Let Cloudflare fully mount and attach click listeners
+        # Give Cloudflare JS 2.0s to attach click handlers
         await asyncio.sleep(2.0)
-        await _save_screen(page)
 
-        # Get the precise position of the checkbox `[ ]` inside the iframe
-        # The checkbox is the LEFT portion of the Turnstile widget (first 50px)
-        coords = await page.evaluate("""
-            () => {
-                // Look for the actual Cloudflare challenge iframe
-                const ifr = document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-                           || document.querySelector('#turnstile-container iframe')
-                           || document.querySelector('iframe');
-                if (!ifr) return { valid: false };
-                const r = ifr.getBoundingClientRect();
-                if (r.width < 50) return { valid: false };
-                // The [ ] checkbox is at the very left side of the iframe
-                // actual checkbox center is approx (24, height/2) within the iframe
-                return {
-                    valid: true,
-                    x: r.left + 24,    // checkbox is 24px from left edge
-                    y: r.top + 20,     // checkbox is 20px from top edge (centered in ~40px tall area)
-                    iframeLeft: r.left,
-                    iframeTop: r.top,
-                    iframeWidth: r.width,
-                    iframeHeight: r.height,
-                };
-            }
-        """)
+        # ── Locate checkbox with native bounding_box ──────────────────────────
+        coords = await _find_turnstile_checkbox(page)
+        if coords is None:
+            logger.warning(f"[{index}] No Turnstile element found by any selector — using hardcoded fallback")
+            # From screenshot analysis: widget appears at approximately y=370, checkbox at y=382
+            coords = (714, 382)
 
-        if not coords.get("valid"):
-            logger.warning(f"[{index}] iframe coords invalid, using fallback position")
-            coords = {"valid": True, "x": 714, "y": 567}
-
-        logger.info(f"[{index}] iframe at left={coords.get('iframeLeft')}, top={coords.get('iframeTop')}, w={coords.get('iframeWidth')}, h={coords.get('iframeHeight')}")
-        logger.info(f"[{index}] Targeting checkbox at ({int(coords['x'])}, {int(coords['y'])})")
-
-        target_x = coords["x"]
-        target_y = coords["y"]
+        target_x, target_y = coords
         await _save_screen(page, (target_x, target_y))
 
-        # Move mouse naturally from center of page to the checkbox
-        await page.mouse.move(640, 500, steps=5)
+        # Natural mouse path from page center to checkbox
+        await page.mouse.move(640, 400, steps=5)
         await asyncio.sleep(0.1)
-        await page.mouse.move(target_x, target_y, steps=10)
-        await asyncio.sleep(0.2)
+        await page.mouse.move(target_x, target_y, steps=12)
+        await asyncio.sleep(0.25)
         await _save_screen(page, (target_x, target_y))
 
         # Single precise click
         await page.mouse.down()
         await asyncio.sleep(0.12)
         await page.mouse.up()
-        logger.info(f"[{index}] ✅ Clicked Turnstile checkbox at ({int(target_x)}, {int(target_y)})")
+        logger.info(f"[{index}] ✅ Clicked checkbox at ({int(target_x)}, {int(target_y)})")
+        await asyncio.sleep(0.3)
         await _save_screen(page, (target_x, target_y))
 
-        # ── Wait for Cloudflare to verify and site to advance to Step 1 ───────
+        # ── Monitor until send-mail-code fires ────────────────────────────────
         logger.info(f"[{index}] Waiting for Cloudflare verification & send-mail-code...")
         turnstile_passed = False
 
@@ -214,7 +210,7 @@ async def create_account_browser(index: int) -> dict:
             await asyncio.sleep(0.8)
 
             if send_mail_result["status"] == 200:
-                logger.info(f"[{index}] ✅ /api/send-mail-code 200 OK!")
+                logger.info(f"[{index}] ✅ send-mail-code 200 OK!")
                 turnstile_passed = True
                 break
 
@@ -230,7 +226,7 @@ async def create_account_browser(index: int) -> dict:
             await _save_screen(page)
             raise RuntimeError(f"Turnstile did not complete. send-mail-code: {send_mail_result}")
 
-        # ── Step 1: OTP input ─────────────────────────────────────────────────
+        # ── Step 1: OTP ───────────────────────────────────────────────────────
         logger.info(f"[{index}] Polling mail.tm for OTP...")
         otp_code = await mailtm.wait_for_otp(email, mail_token, timeout=90)
         logger.info(f"[{index}] OTP: {otp_code}")
