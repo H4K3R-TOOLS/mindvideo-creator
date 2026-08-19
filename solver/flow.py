@@ -1,8 +1,6 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
-# - Single clean humanized click on Turnstile checkbox (avoids multi-click spam trigger)
-# - Real-time visual cursor overlay (red indicator visible on dashboard stream)
-# - Direct #turnstile-container coordinate click + patient verification wait
+# Direct page.frames Cloudflare Turnstile Clicker + Live visual preview
 
 import asyncio
 import logging
@@ -22,10 +20,9 @@ SCREENSHOT_PATH = os.path.join(BASE_DIR, "screenshot.png")
 _CHROMIUM_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
+    "--disable-setuid-sandbox",
+    "--disable-gpu",
     "--disable-blink-features=AutomationControlled",
-    "--enable-webgl",
-    "--use-gl=swiftshader",
-    "--disable-features=IsolateOrigins,site-per-process",
     "--window-size=1280,800",
 ]
 
@@ -76,9 +73,6 @@ async def create_account_browser(index: int) -> dict:
             user_agent=USER_AGENT,
             locale="en-US",
             viewport={"width": 1280, "height": 800},
-            device_scale_factor=1,
-            has_touch=False,
-            is_mobile=False,
         )
         page = await context.new_page()
 
@@ -144,12 +138,12 @@ async def create_account_browser(index: int) -> dict:
         await _save_screen(page)
 
         # ── Solve Turnstile Widget ────────────────────────────────────────────
-        logger.info(f"[{index}] Waiting for Turnstile widget to appear & clicking checkbox ONCE...")
+        logger.info(f"[{index}] Waiting for Turnstile widget...")
         turnstile_passed = False
-        has_clicked_turnstile = False
+        has_clicked = False
 
         for attempt in range(60):
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(0.6)
 
             # Check if send-mail-code succeeded (200 OK)
             if send_mail_result["status"] == 200:
@@ -164,40 +158,44 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # ONLY CLICK ONCE when Turnstile appears (never spam click while Verifying...)
-            if not has_clicked_turnstile:
-                try:
-                    targets = [
-                        await page.query_selector("#turnstile-container"),
-                        await page.query_selector("div.cf-turnstile"),
-                        await page.query_selector("iframe"),
-                    ]
-                    for target in targets:
-                        if target:
-                            box = await target.bounding_box()
+            # If not yet clicked, check all loaded frames for Turnstile
+            if not has_clicked:
+                for frame in page.frames:
+                    if any(k in frame.url for k in ["challenges.cloudflare.com", "turnstile", "cdn-cgi"]):
+                        try:
+                            # Target clickable elements inside the challenge frame
+                            cb = frame.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, label, body").first
+                            if await cb.count() > 0:
+                                # Get position for visual cursor
+                                container = await page.query_selector("#turnstile-container")
+                                if container:
+                                    c_box = await container.bounding_box()
+                                    if c_box:
+                                        await _save_screen(page, (c_box["x"] + 28, c_box["y"] + c_box["height"]/2))
+                                
+                                await cb.click(timeout=1500, force=True)
+                                logger.info(f"[{index}] ✅ Successfully clicked Turnstile inside frame ({frame.url[:50]}...) [attempt {attempt+1}]")
+                                has_clicked = True
+                                break
+                        except Exception as e:
+                            logger.debug(f"Frame click error: {e}")
+
+                # Fallback: container coordinate click
+                if not has_clicked:
+                    try:
+                        container = await page.query_selector("#turnstile-container")
+                        if container:
+                            box = await container.bounding_box()
                             if box and box["width"] > 50 and box["height"] > 20:
-                                # Target the checkbox area on the left
                                 click_x = box["x"] + 28
                                 click_y = box["y"] + box["height"] / 2
-                                
-                                # Move red cursor smoothly to checkbox
                                 await _save_screen(page, (click_x, click_y))
-                                await page.mouse.move(click_x, click_y, steps=8)
-                                await asyncio.sleep(0.1)
-                                
-                                # Dispatch single clean mouse click
-                                await page.mouse.down()
-                                await asyncio.sleep(0.08)
-                                await page.mouse.up()
-                                
-                                logger.info(f"[{index}] ✅ Clicked Turnstile checkbox ONCE at ({int(click_x)}, {int(click_y)}) — now waiting for verification...")
-                                has_clicked_turnstile = True
-                                await _save_screen(page, (click_x, click_y))
-                                break
-                except Exception as e:
-                    logger.debug(f"Click error: {e}")
+                                await page.mouse.click(click_x, click_y)
+                                logger.info(f"[{index}] Fallback clicked container at ({int(click_x)}, {int(click_y)})")
+                                has_clicked = True
+                    except Exception:
+                        pass
             else:
-                # While verifying, just update screenshot for live preview (do not click!)
                 await _save_screen(page)
 
         if not turnstile_passed:
