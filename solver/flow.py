@@ -26,14 +26,30 @@ def set_active_page(page):
     global _active_page
     _active_page = page
 
-# Docker-optimized Chromium flags.
-# --no-zygote: prevents zygote fork crash in Linux containers.
-# --single-process: avoids multi-process sandbox issues (Docker-safe).
-# zendriver auto-adds --no-sandbox for root, and its own CDP connection flags.
+# Memory-optimized Chromium flags for Render/Northflank free tier (512MB limit).
+# --single-process: runs renderer+GPU+browser in ONE process — saves ~200MB vs default multi-process.
+# --js-flags: cap V8 JS heap to 128MB.
+# zendriver auto-adds --no-sandbox for root, --headless=new, and CDP flags.
 _CHROMIUM_ARGS = [
-    "--no-zygote",
-    "--disable-dev-shm-usage",
+    "--single-process",                        # biggest saving — collapses all Chrome processes into one
+    "--no-zygote",                             # no zygote fork — required with single-process in Docker
+    "--disable-dev-shm-usage",                 # use /tmp instead of /dev/shm (prevents 64MB shm limit OOM)
     "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--disable-translate",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-hang-monitor",
+    "--disable-prompt-on-repost",
+    "--disable-client-side-phishing-detection",
+    "--no-default-browser-check",
+    "--metrics-recording-only",
+    "--safebrowsing-disable-auto-update",
+    "--js-flags=--max-old-space-size=128",     # cap V8 heap — prevents renderer OOM spikes
     "--window-size=1280,800",
     "--hide-scrollbars",
     "--mute-audio",
