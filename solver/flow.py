@@ -26,15 +26,21 @@ def set_active_page(page):
     global _active_page
     _active_page = page
 
-# Force old-style --headless (no =new suffix) directly as a browser arg.
-# nodriver headless=False means it won't inject --headless=new itself.
-# Old --headless doesn't need X11 and has no CDP port timing bugs unlike --headless=new.
-# nodriver auto-detects root and adds --no-sandbox automatically.
+# headless=new + single-process: renderer runs inside the browser process itself,
+# no subprocess spawning — bypasses Render's /dev/shm container restrictions.
+# nodriver auto-detects root and adds --no-sandbox.
 _CHROMIUM_ARGS = [
-    "--headless",                  # old headless mode — stable CDP bind, no X11 needed
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--window-size=1280,800",
+    "--single-process",            # renderer in-process, no subprocess crash on Render
+    "--no-zygote",                 # disable zygote process spawner (docker-safe)
+    "--disable-extensions",
+    "--disable-plugins",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--memory-pressure-off",
     "--hide-scrollbars",
     "--mute-audio",
 ]
@@ -62,8 +68,8 @@ async def _save_screen(tab):
 async def create_account_browser(index: int) -> dict:
     """
     Automates the full registration on mindvideo.ai/auth/signup/ using nodriver.
-    Uses old-style --headless flag (injected via browser_args) so nodriver doesn't
-    add --headless=new, which has a known CDP connection timing bug on Debian Chromium.
+    Uses --single-process + --no-zygote to run the renderer inside the browser process,
+    bypassing Render's /dev/shm restrictions that crash the renderer subprocess.
     """
     email, _, mail_token = await mailtm.create_inbox()
     password = "Pass" + "".join(random.choices(string.ascii_letters + string.digits, k=10)) + "!9"
@@ -75,7 +81,7 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=False,            # prevents nodriver from injecting --headless=new
+        headless=True,             # headless=new — correct for Chromium 112+
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
