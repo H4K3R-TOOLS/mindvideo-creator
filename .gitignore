@@ -1,0 +1,9 @@
+accounts.txt
+logs/
+.env
+__pycache__/
+*.pyc
+*.pyo
+solver/_sign_wasm_bg.wasm
+solver/_sign_worker.js
+output/

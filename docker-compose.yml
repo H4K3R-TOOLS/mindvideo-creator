@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  creator:
+    build: .
+    environment:
+      - COUNT=1
+      - THREADS=1
+      - HEADLESS=true
+      - LOG_LEVEL=INFO
+      - OUTPUT_FILE=/app/accounts.txt
+    volumes:
+      - ./output:/app/output
+    # share display if running headful locally (Windows: skip this)
+    # shm_size: '256mb'
