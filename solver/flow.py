@@ -68,7 +68,8 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser binary: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=HEADLESS,
+        headless=False,
+        sandbox=False,
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
     )
