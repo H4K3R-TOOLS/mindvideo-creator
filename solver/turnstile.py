@@ -1,20 +1,46 @@
 # Python 3.11 | solver/turnstile.py
-# Purpose: Solve Cloudflare Turnstile on actual mindvideo.ai/auth/signup/ page
-# Fix: Must navigate to REAL domain — sitekey 0x4AAAAAACseUFodNxM1zekf is
-#      domain-locked to mindvideo.ai. Injected HTML on alien domain = timeout.
-# Strategy: Load signup page, intercept network request to /api/send-mail-code
-#            OR hook window.__cf_chl_opt callback to grab token directly.
+# Purpose: Solve Cloudflare Turnstile — Theyka/Turnstile-Solver approach
+# Method:  Spin a local aiohttp server → patchright navigates to it →
+#          CF sees a real patched Chromium browser → auto-solves token.
+# Source:  https://github.com/Theyka/Turnstile-Solver (logic replicated here)
+# Cost:    FREE — fully self-hosted, no external API needed.
+#
+# Sitekey: 0x4AAAAAACseUFodNxM1zekf  |  Site: https://www.mindvideo.ai
 
 import asyncio
 import logging
 import os
+import random
 
+from aiohttp import web
 from patchright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
 
-SIGNUP_URL = "https://www.mindvideo.ai/auth/signup/"
-HEADLESS   = os.getenv("HEADLESS", "true").lower() == "true"
+SITEKEY  = "0x4AAAAAACseUFodNxM1zekf"
+SITE_URL = "https://www.mindvideo.ai"
+HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+
+# Exact Theyka approach: simple local HTML, turnstile loads clean
+_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <title>verify</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+<body>
+  <div class="cf-turnstile"
+       data-sitekey="{sitekey}"
+       data-callback="cb"
+       data-theme="light">
+  </div>
+  <script>
+    window._token = null;
+    function cb(t) {{ window._token = t; }}
+  </script>
+</body>
+</html>""".format(sitekey=SITEKEY)
 
 _CHROMIUM_ARGS = [
     "--no-sandbox",
@@ -25,89 +51,93 @@ _CHROMIUM_ARGS = [
     "--disable-blink-features=AutomationControlled",
 ]
 
-# JS: hook Turnstile global callback to capture token as soon as it fires
-_HOOK_SCRIPT = """
-() => {
-    window._captured_cf_token = null;
-    // Hook the global turnstile object once it loads
-    const origTurnstile = window.turnstile;
-    Object.defineProperty(window, 'turnstile', {
-        get() { return origTurnstile; },
-        set(ts) {
-            const origRender = ts.render.bind(ts);
-            ts.render = function(container, params) {
-                const origCallback = params.callback;
-                params.callback = function(token) {
-                    window._captured_cf_token = token;
-                    if (origCallback) origCallback(token);
-                };
-                return origRender(container, params);
-            };
-            Object.defineProperty(window, 'turnstile', {value: ts, writable: false});
-        },
-        configurable: true
-    });
-}
-"""
 
-
-async def solve(timeout_ms: int = 60000) -> str:
+async def solve(timeout_ms: int = 120000) -> str:
     """
-    Navigate to mindvideo.ai/auth/signup/, hook Turnstile callback,
-    return cf_challenge_token. Raises TimeoutError on timeout.
+    Start local aiohttp server, open with patchright, intercept Turnstile token.
+    patchright patches Chromium fingerprint → CF auto-solves.
+    Returns cf_challenge_token string. Raises TimeoutError on failure.
     """
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=HEADLESS,
-            args=_CHROMIUM_ARGS,
-        )
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-            locale="en-US",
-            viewport={"width": 1280, "height": 720},
-            extra_http_headers={
-                "sec-ch-ua":          '"Not=A?Brand";v="99", "Chromium";v="131"',
-                "sec-ch-ua-mobile":   "?0",
-                "sec-ch-ua-platform": '"Windows"',
-                "Accept-Language":    "en-US,en;q=0.9",
-            },
-        )
-        page = await ctx.new_page()
+    port = random.randint(10000, 60000)
+    token_holder = {"token": None}
 
-        # Inject hook before any page script runs
-        await page.add_init_script(_HOOK_SCRIPT)
+    # ── Local aiohttp server ──────────────────────────────────────────────────
+    async def handle(request):
+        return web.Response(text=_HTML, content_type="text/html")
 
-        logger.info(f"Navigating to {SIGNUP_URL}...")
-        await page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=30000)
+    srv_app = web.Application()
+    srv_app.router.add_get("/", handle)
+    runner = web.AppRunner(srv_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
+    await site.start()
+    local_url = f"http://127.0.0.1:{port}/"
+    logger.info(f"Local Turnstile server: {local_url}")
 
-        logger.info("Waiting for Turnstile token...")
-        try:
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=HEADLESS,
+                args=_CHROMIUM_ARGS,
+            )
+            ctx = await browser.new_context(
+                # Spoof UA + platform to look like real Windows Chrome
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+                timezone_id="America/New_York",
+                viewport={"width": 1280, "height": 720},
+                extra_http_headers={
+                    "Accept-Language":    "en-US,en;q=0.9",
+                    "sec-ch-ua":          '"Not=A?Brand";v="99", "Chromium";v="131"',
+                    "sec-ch-ua-mobile":   "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                    # Spoof origin/referer to mindvideo.ai
+                    "Origin":  SITE_URL,
+                    "Referer": SITE_URL + "/",
+                },
+            )
+            page = await ctx.new_page()
+
+            # Override JS-exposed location to look like mindvideo.ai
+            await page.add_init_script(f"""
+                Object.defineProperty(document, 'referrer', {{
+                    get: () => '{SITE_URL}/'
+                }});
+                // Patch hostname so CF sitekey domain check passes
+                const origLocation = window.location;
+                Object.defineProperty(window, 'location', {{
+                    value: new Proxy(origLocation, {{
+                        get(t, p) {{
+                            if (p === 'hostname') return 'www.mindvideo.ai';
+                            if (p === 'origin')   return '{SITE_URL}';
+                            if (p === 'href')      return '{SITE_URL}/auth/signup/';
+                            return typeof t[p] === 'function' ? t[p].bind(t) : t[p];
+                        }}
+                    }}),
+                    configurable: true
+                }});
+            """)
+
+            logger.info("Navigating to local Turnstile page...")
+            await page.goto(local_url, wait_until="domcontentloaded", timeout=20000)
+
+            logger.info("Waiting for Turnstile auto-solve...")
             await page.wait_for_function(
-                "() => typeof window._captured_cf_token === 'string' "
-                "&& window._captured_cf_token.length > 10",
+                "() => typeof window._token === 'string' && window._token.length > 10",
                 timeout=timeout_ms,
             )
-            token: str = await page.evaluate("() => window._captured_cf_token")
-            logger.info(f"Token captured: {token[:40]}...")
-            return token
-        except Exception as e:
-            # Fallback: check if Turnstile iframe rendered and has a token in DOM
-            try:
-                token = await page.evaluate("""
-                    () => {
-                        const inp = document.querySelector('[name="cf-turnstile-response"]');
-                        return inp ? inp.value : null;
-                    }
-                """)
-                if token and len(token) > 10:
-                    logger.info(f"Token from DOM fallback: {token[:40]}...")
-                    return token
-            except Exception:
-                pass
-            raise TimeoutError(f"Turnstile solve failed after {timeout_ms}ms: {e}") from e
-        finally:
+            token: str = await page.evaluate("() => window._token")
+            token_holder["token"] = token
+            logger.info(f"✅ Turnstile solved: {token[:40]}...")
             await browser.close()
+
+    finally:
+        await runner.cleanup()
+
+    if not token_holder["token"]:
+        raise TimeoutError("Turnstile solve failed — token not captured")
+    return token_holder["token"]
