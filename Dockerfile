@@ -49,7 +49,7 @@ COPY . .
 ENV PYTHONUNBUFFERED=1 \
     COUNT=1 \
     THREADS=1 \
-    HEADLESS=false \
+    HEADLESS=true \
     DISPLAY=:99 \
     OUTPUT_FILE=/app/accounts.txt \
     LOG_LEVEL=INFO \

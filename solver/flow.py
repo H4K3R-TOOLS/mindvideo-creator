@@ -13,7 +13,7 @@ from email_service import mailtm
 logger = logging.getLogger(__name__)
 
 SIGNUP_URL = "https://www.mindvideo.ai/auth/signup/"
-HEADLESS   = os.getenv("HEADLESS", "false").lower() == "true"
+HEADLESS   = os.getenv("HEADLESS", "true").lower() == "true"
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCREENSHOT_PATH = os.path.join(BASE_DIR, "screenshot.png")
 
@@ -68,7 +68,7 @@ async def create_account_browser(index: int) -> dict:
     logger.info(f"[{index}] [nodriver] Launching browser binary: {browser_bin or 'auto-detected'}")
 
     browser = await uc.start(
-        headless=False,
+        headless=HEADLESS,
         no_sandbox=True,
         browser_executable_path=browser_bin,
         browser_args=_CHROMIUM_ARGS,
