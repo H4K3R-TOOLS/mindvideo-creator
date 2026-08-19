@@ -50,8 +50,7 @@ RUN python -m patchright install chromium
 # ── App source ────────────────────────────────────────────────────────────────
 COPY . .
 
-# Pre-download WASM sign file at build time
-RUN python -c "from solver.sign import _ensure_files; _ensure_files()" || true
+# Note: WASM downloaded at runtime with browser headers (build-time gets 403 from CF CDN)
 
 ENV PYTHONUNBUFFERED=1 \
     COUNT=1 \

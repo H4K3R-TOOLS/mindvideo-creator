@@ -193,12 +193,25 @@ def _ensure_files() -> None:
     # Write Node.js script
     with open(_NODE_CACHE, "w", encoding="utf-8") as f:
         f.write(_NODE_SCRIPT)
-    # Download WASM if not cached
+    # Download WASM with browser headers (CF CDN blocks plain urllib — 403)
     if not os.path.exists(_WASM_CACHE):
-        import urllib.request
+        import httpx
         logger.info("Downloading sign_wasm_bg.wasm...")
-        urllib.request.urlretrieve(_WASM_URL, _WASM_CACHE)
-        logger.info(f"WASM saved: {_WASM_CACHE}")
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Referer":        "https://www.mindvideo.ai/auth/signup/",
+            "Accept":         "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        resp = httpx.get(_WASM_URL, headers=headers, follow_redirects=True, timeout=30)
+        resp.raise_for_status()
+        with open(_WASM_CACHE, "wb") as f:
+            f.write(resp.content)
+        logger.info(f"WASM saved: {_WASM_CACHE} ({len(resp.content)} bytes)")
     _wasm_ready = True
 
 
