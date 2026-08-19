@@ -129,105 +129,108 @@ async def create_account_browser(index: int) -> dict:
         if submit_btn:
             await submit_btn.click()
 
-        # ── Step 0: Solve Turnstile ──────────────────────────────────────────
-        logger.info(f"[{index}] [zendriver] Waiting for Turnstile / Step 1...")
+        # ── Step 0 + 1: Wait for Turnstile → OTP screen ─────────────────────
+        # Strategy: tab.evaluate() JS checks are 100% non-blocking (no 10s timeouts).
+        # We poll every second for up to 90s for:
+        #   (A) OTP input appearing → Turnstile auto-solved + send-mail-code done by page
+        #   (B) cf-turnstile-response token appearing → Turnstile solved, may need to re-click Continue
+        # Every 8s also try cf_verify() and log what it reports.
+        logger.info(f"[{index}] [zendriver] Waiting for Turnstile auto-solve (up to 90s)...")
         await tab.sleep(3.0)
         await _save_screen(tab)
 
-        # Primary approach: tab.cf_verify() — built-in zendriver/nodriver Cloudflare solver.
-        # Uses OpenCV to locate and click the Turnstile checkbox automatically.
-        turnstile_passed = False
-        for cf_attempt in range(3):
+        otp_input_found = False
+        for attempt in range(90):
+            # ── Check A: OTP input (non-blocking JS) ─────────────────────────
             try:
-                logger.info(f"[{index}] [zendriver] cf_verify() attempt {cf_attempt+1}...")
-                await tab.cf_verify()
-                await tab.sleep(2.0)
-                logger.info(f"[{index}] ✅ [zendriver] cf_verify() executed")
-            except Exception as e:
-                logger.debug(f"[{index}] cf_verify attempt {cf_attempt+1} failed: {e}")
-
-            # Check if we're past Turnstile — look for OTP input (short timeout, don't block)
-            try:
-                code_input = await tab.select("input#verificationCode", timeout=2)
-                if code_input:
-                    logger.info(f"[{index}] ✅ [zendriver] OTP input visible — Turnstile passed!")
-                    turnstile_passed = True
+                has_otp = await tab.evaluate(
+                    "!!document.querySelector('input#verificationCode, "
+                    "input[placeholder*=\"code\"], input[placeholder*=\"Code\"]')"
+                )
+                if has_otp:
+                    logger.info(f"[{index}] ✅ [zendriver] OTP input found (attempt {attempt+1})!")
+                    otp_input_found = True
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[{index}] JS OTP check err: {e}")
 
-            await _save_screen(tab)
-            await tab.sleep(1.5)
+            # ── Check B: Turnstile token value (non-blocking JS) ─────────────
+            try:
+                token_val = await tab.evaluate(
+                    "document.querySelector('input[name=\"cf-turnstile-response\"]')?.value || ''"
+                )
+                if token_val and len(str(token_val)) > 20:
+                    logger.info(f"[{index}] [zendriver] Turnstile token present, re-clicking Continue...")
+                    try:
+                        btn = await tab.find("Continue", best_match=True)
+                        if btn:
+                            await btn.click()
+                            await tab.sleep(2.5)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"[{index}] JS token check err: {e}")
 
-        # Fallback: manual mouse_click on the Turnstile iframe checkbox
-        if not turnstile_passed:
-            logger.info(f"[{index}] [zendriver] cf_verify fallback — manual Turnstile click...")
-            for attempt in range(30):
-                await tab.sleep(1.0)
-
-                # Check for OTP input (short timeout)
+            # ── Every 8s: try cf_verify() + manual iframe search ──────────────
+            if attempt % 8 == 0:
                 try:
-                    code_input = await tab.select("input#verificationCode", timeout=2)
-                    if code_input:
-                        logger.info(f"[{index}] ✅ [zendriver] OTP input found at attempt {attempt+1}!")
-                        turnstile_passed = True
-                        break
+                    await tab.cf_verify()
+                    logger.info(f"[{index}] [zendriver] cf_verify() called at attempt {attempt}")
+                except Exception as e:
+                    logger.info(f"[{index}] [zendriver] cf_verify() → {type(e).__name__}: {e}")
+
+            # ── Every 8s: try finding Turnstile text (searches all iframes) ──
+            if attempt % 8 == 4:
+                try:
+                    ts_elem = await tab.find("Verify you are human", best_match=True)
+                    if ts_elem:
+                        logger.info(f"[{index}] [zendriver] Found Turnstile text elem, clicking...")
+                        await ts_elem.mouse_click()
+                        await tab.sleep(2.0)
                 except Exception:
                     pass
 
-                # Try clicking Turnstile element
-                try:
-                    turnstile_elem = await tab.find("Verify you are human", best_match=True, timeout=2)
-                    if turnstile_elem:
-                        await turnstile_elem.mouse_click()
-                        logger.info(f"[{index}] [zendriver] Clicked Turnstile [attempt {attempt+1}]")
-                        await tab.sleep(1.5)
-                        await _save_screen(tab)
-                        continue
-                except Exception:
-                    pass
-
-                # Try selecting the Turnstile iframe checkbox directly
-                try:
-                    cb = await tab.select(".cf-turnstile, input[type=checkbox]", timeout=1)
-                    if cb:
-                        await cb.mouse_click()
-                        await tab.sleep(1.5)
-                except Exception:
-                    pass
-
+            await tab.sleep(1.0)
+            if attempt % 15 == 14:
                 await _save_screen(tab)
 
-        if not turnstile_passed:
+        if not otp_input_found:
             await _save_screen(tab)
-            raise RuntimeError("Turnstile did not complete — OTP input never appeared.")
+            raise RuntimeError("Turnstile did not resolve in 90s — OTP input never appeared.")
 
-        # ── Step 1: Read OTP from mail.tm and enter verification code ─────────
-        logger.info(f"[{index}] [nodriver] Polling mail.tm for OTP code...")
+        # ── Step 1: Poll mail.tm for OTP, enter code ─────────────────────────
+        logger.info(f"[{index}] [zendriver] Polling mail.tm for OTP...")
         otp_code = await mailtm.wait_for_otp(email, mail_token, timeout=90)
-        logger.info(f"[{index}] [nodriver] Acquired OTP code: {otp_code}")
+        logger.info(f"[{index}] [zendriver] Got OTP: {otp_code}")
 
-        # Fill OTP
-        code_input = await tab.select("input#verificationCode, input[placeholder*='code' i]")
-        if code_input:
-            await code_input.send_keys(otp_code)
-            await tab.sleep(0.4)
-            await _save_screen(tab)
+        try:
+            code_input = await tab.select(
+                "input#verificationCode, input[placeholder*='code' i]", timeout=10
+            )
+            if code_input:
+                await code_input.send_keys(otp_code)
+                await tab.sleep(0.4)
+                await _save_screen(tab)
+        except Exception as e:
+            logger.warning(f"[{index}] OTP input select failed: {e}")
 
-        # Submit final Step 1 (Register)
-        logger.info(f"[{index}] [nodriver] Submitting final registration...")
-        submit_btn = await tab.find("Register", best_match=True)
-        if not submit_btn:
-            submit_btn = await tab.select("button[type=submit], .ant-btn")
-        if submit_btn:
-            await submit_btn.click()
+        # ── Step 2: Submit registration ───────────────────────────────────────
+        logger.info(f"[{index}] [zendriver] Submitting final registration...")
+        try:
+            submit_btn = await tab.find("Register", best_match=True)
+            if not submit_btn:
+                submit_btn = await tab.select("button[type=submit]", timeout=5)
+            if submit_btn:
+                await submit_btn.click()
+        except Exception as e:
+            logger.warning(f"[{index}] Submit button error: {e}")
 
         await tab.sleep(3.0)
         await _save_screen(tab)
-        logger.info(f"[{index}] ✅ [nodriver] Registration successfully completed for: {email}")
+        logger.info(f"[{index}] ✅ [zendriver] Registration done: {email}")
 
         return {
-            "email": email,
+            "email":    email,
             "password": password,
             "nickname": nickname,
         }
