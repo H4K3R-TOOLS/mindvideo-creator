@@ -74,6 +74,8 @@ async def send_otp(email: str, cf_token: str) -> None:
             json=payload,
             headers=_COMMON,
         )
+        if r.status_code != 200:
+            logger.error(f"send_otp failed [{r.status_code}]: {r.text}")
         r.raise_for_status()
         logger.info(f"OTP sent to {email} | status={r.status_code}")
 
