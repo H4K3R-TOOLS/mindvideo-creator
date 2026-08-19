@@ -58,6 +58,9 @@ ENV PYTHONUNBUFFERED=1 \
     THREADS=1 \
     HEADLESS=true \
     OUTPUT_FILE=/app/accounts.txt \
-    LOG_LEVEL=INFO
+    LOG_LEVEL=INFO \
+    PORT=8000
 
-CMD ["python", "main.py"]
+EXPOSE 8000
+
+CMD ["python", "server.py"]
