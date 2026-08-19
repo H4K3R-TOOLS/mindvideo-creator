@@ -54,6 +54,10 @@ async def create_account_browser(index: int) -> dict:
         )
         page = await context.new_page()
 
+        # Pipe browser console to server logs for debugging
+        page.on("console", lambda msg: logger.info(f"[{index} Browser Console] {msg.text}"))
+        page.on("pageerror", lambda err: logger.error(f"[{index} Browser PageError] {err}"))
+
         # Track network responses for send-mail-code and register
         send_mail_result = {"status": None, "body": None}
 
@@ -73,21 +77,23 @@ async def create_account_browser(index: int) -> dict:
         await asyncio.sleep(2)
 
         # ── Step 0: Fill Email and Submit ─────────────────────────────────────
-        logger.info(f"[{index}] Filling email: {email}")
+        logger.info(f"[{index}] Typing email: {email}")
         email_input = page.locator("input#email, input[placeholder*='email' i]").first
         await email_input.wait_for(state="visible", timeout=15000)
         await email_input.click()
-        await email_input.fill(email)
+        # Type character-by-character to trigger React Antd onChange validation
+        await email_input.type(email, delay=35)
         await page.keyboard.press("Tab")
         await asyncio.sleep(0.5)
 
-        # Click Continue to open Turnstile
+        # Ensure form is valid and click Continue button
         logger.info(f"[{index}] Clicking Continue button...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
+        await submit_btn.wait_for(state="visible", timeout=5000)
         await submit_btn.click()
 
         # ── Solve Turnstile Widget ────────────────────────────────────────────
-        logger.info(f"[{index}] Waiting for Turnstile iframe to render...")
+        logger.info(f"[{index}] Waiting for Turnstile container to activate...")
         turnstile_passed = False
 
         for attempt in range(40):
@@ -99,21 +105,26 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # Find Turnstile iframe and simulate real mouse click on checkbox
+            # Look for Turnstile iframe inside page
             try:
                 iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
                 if iframe_handle:
                     box = await iframe_handle.bounding_box()
                     if box and box["width"] > 0 and box["height"] > 0:
-                        # Click on the left checkbox area of the Turnstile widget
                         click_x = box["x"] + 30
                         click_y = box["y"] + box["height"] / 2
                         await page.mouse.click(click_x, click_y)
-                        logger.info(f"[{index}] Mouse clicked Turnstile at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
+                        logger.info(f"[{index}] Mouse clicked Turnstile checkbox at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
+                else:
+                    # If iframe not found yet, check if turnstile-container exists
+                    container = await page.query_selector("#turnstile-container")
+                    if container:
+                        style = await container.get_attribute("style")
+                        logger.debug(f"[{index}] #turnstile-container style: {style}")
             except Exception as e:
-                logger.debug(f"Click attempt failed: {e}")
+                logger.debug(f"Click attempt error: {e}")
 
-            # Also check if verification code input appeared
+            # Check if verification code input appeared
             code_input = page.locator("input#verificationCode, input[placeholder*='code' i], input[placeholder*='verification' i]").first
             if await code_input.count() > 0 and await code_input.is_visible():
                 logger.info(f"[{index}] ✅ Verification code input appeared!")
@@ -133,20 +144,20 @@ async def create_account_browser(index: int) -> dict:
         code_input = page.locator("input#verificationCode, input[placeholder*='code' i], input[placeholder*='verification' i]").first
         await code_input.wait_for(state="visible", timeout=10000)
         await code_input.click()
-        await code_input.fill(otp_code)
+        await code_input.type(otp_code, delay=35)
         await asyncio.sleep(0.5)
 
         # Fill Nickname and Password if present in Step 1
         nick_el = page.locator("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]").first
         if await nick_el.count() > 0 and await nick_el.is_visible():
             await nick_el.click()
-            await nick_el.fill(nickname)
+            await nick_el.type(nickname, delay=30)
             await asyncio.sleep(0.3)
 
         pass_el = page.locator("input#password, input[type='password']").first
         if await pass_el.count() > 0 and await pass_el.is_visible():
             await pass_el.click()
-            await pass_el.fill(password)
+            await pass_el.type(password, delay=30)
             await asyncio.sleep(0.3)
 
         # Submit final Step
