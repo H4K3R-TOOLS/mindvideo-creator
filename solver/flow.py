@@ -1,6 +1,6 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
-# Multi-Layer High-Precision Turnstile Clicker + Cerebras AI Diagnostics
+# Exact getBoundingClientRect() coordinate resolution for Turnstile checkbox
 
 import asyncio
 import logging
@@ -9,7 +9,6 @@ import random
 import string
 from patchright.async_api import async_playwright
 from email_service import mailtm
-from solver.ai import analyze_status
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +42,11 @@ async def _save_screen(page, cursor_pos=None):
                     if (!c) {{
                         c = document.createElement('div');
                         c.id = '_v_cursor';
-                        c.style.cssText = 'position:fixed;width:16px;height:16px;background:#ff0055;border:2px solid #fff;border-radius:50%;z-index:9999999;pointer-events:none;box-shadow:0 0 10px #ff0055;';
+                        c.style.cssText = 'position:fixed;width:18px;height:18px;background:#ff0055;border:2px solid #fff;border-radius:50%;z-index:9999999;pointer-events:none;box-shadow:0 0 12px #ff0055;';
                         document.body.appendChild(c);
                     }}
-                    c.style.left = '{x - 8}px';
-                    c.style.top = '{y - 8}px';
+                    c.style.left = '{x - 9}px';
+                    c.style.top = '{y - 9}px';
                 }})()
             """)
         await page.screenshot(path=SCREENSHOT_PATH)
@@ -104,25 +103,16 @@ async def create_account_browser(index: int) -> dict:
         
         email_input = page.locator("input#email, input[placeholder*='email' i]").first
         await email_input.wait_for(state="visible", timeout=15000)
-        e_box = await email_input.bounding_box()
-        if e_box:
-            await _save_screen(page, (e_box["x"] + 20, e_box["y"] + e_box["height"]/2))
         await email_input.click()
         await email_input.type(email, delay=15)
 
         nick_input = page.locator("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]").first
         await nick_input.wait_for(state="visible", timeout=10000)
-        n_box = await nick_input.bounding_box()
-        if n_box:
-            await _save_screen(page, (n_box["x"] + 20, n_box["y"] + n_box["height"]/2))
         await nick_input.click()
         await nick_input.type(nickname, delay=15)
 
         pass_input = page.locator("input#password, input[type='password']").first
         await pass_input.wait_for(state="visible", timeout=10000)
-        p_box = await pass_input.bounding_box()
-        if p_box:
-            await _save_screen(page, (p_box["x"] + 20, p_box["y"] + p_box["height"]/2))
         await pass_input.click()
         await pass_input.type(password, delay=15)
         await page.keyboard.press("Tab")
@@ -131,9 +121,6 @@ async def create_account_browser(index: int) -> dict:
         # Click Continue submit button
         logger.info(f"[{index}] Submitting Step 0 form...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
-        s_box = await submit_btn.bounding_box()
-        if s_box:
-            await _save_screen(page, (s_box["x"] + s_box["width"]/2, s_box["y"] + s_box["height"]/2))
         await submit_btn.click()
         await asyncio.sleep(0.5)
         await _save_screen(page)
@@ -160,38 +147,55 @@ async def create_account_browser(index: int) -> dict:
                 break
 
             if not has_clicked:
-                # 1. Check for iframe element on page
-                iframe_el = await page.query_selector("#turnstile-container iframe, iframe[src*='challenges'], iframe")
-                if iframe_el:
-                    box = await iframe_el.bounding_box()
-                    if box and box["width"] > 50 and box["height"] > 20:
-                        # Target exact checkbox center inside the white box
-                        click_x = box["x"] + 28
-                        click_y = box["y"] + box["height"] / 2
+                # Use getBoundingClientRect in JS to get exact rendered screen position
+                coords = await page.evaluate("""
+                    () => {
+                        const ifr = document.querySelector('#turnstile-container iframe') || document.querySelector('iframe');
+                        if (ifr) {
+                            const r = ifr.getBoundingClientRect();
+                            if (r.width > 50 && r.height > 20) {
+                                return { x: r.left + 28, y: r.top + (r.height / 2), valid: true };
+                            }
+                        }
+                        const cnt = document.querySelector('#turnstile-container');
+                        if (cnt) {
+                            const r = cnt.getBoundingClientRect();
+                            if (r.width > 50 && r.height > 20) {
+                                return { x: r.left + 28, y: r.top + (r.height / 2), valid: true };
+                            }
+                        }
+                        return { valid: false };
+                    }
+                """)
 
-                        # Focus iframe and move mouse with realistic curve
-                        await page.evaluate("() => { const f = document.querySelector('iframe'); if (f) f.focus(); }")
-                        await _save_screen(page, (click_x, click_y))
-                        await page.mouse.move(click_x, click_y, steps=8)
-                        await asyncio.sleep(0.1)
+                if coords.get("valid"):
+                    click_x = coords["x"]
+                    click_y = coords["y"]
 
-                        # Mouse down, small hold, mouse up
-                        await page.mouse.down()
-                        await asyncio.sleep(0.12)
-                        await page.mouse.up()
+                    logger.info(f"[{index}] Target Turnstile checkbox at exact viewport coords ({int(click_x)}, {int(click_y)})")
+                    await _save_screen(page, (click_x, click_y))
+                    
+                    # Smooth human mouse move
+                    await page.mouse.move(click_x, click_y, steps=8)
+                    await asyncio.sleep(0.1)
 
-                        # Also trigger internal frame locator click
-                        try:
-                            fl = page.frame_locator("#turnstile-container iframe, iframe").first
-                            cb = fl.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
-                            if await cb.count() > 0:
-                                await cb.click(timeout=1000, force=True)
-                        except Exception:
-                            pass
+                    # Real click
+                    await page.mouse.down()
+                    await asyncio.sleep(0.12)
+                    await page.mouse.up()
 
-                        logger.info(f"[{index}] ✅ Clicked Turnstile checkbox at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
-                        has_clicked = True
-                        await _save_screen(page, (click_x, click_y))
+                    # Also click frame locator directly as fallback
+                    try:
+                        fl = page.frame_locator("#turnstile-container iframe, iframe").first
+                        cb = fl.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
+                        if await cb.count() > 0:
+                            await cb.click(timeout=1000, force=True)
+                    except Exception:
+                        pass
+
+                    logger.info(f"[{index}] ✅ Clicked Turnstile checkbox ONCE at ({int(click_x)}, {int(click_y)})")
+                    has_clicked = True
+                    await _save_screen(page, (click_x, click_y))
             else:
                 await _save_screen(page)
 
