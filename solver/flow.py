@@ -1,7 +1,7 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
-# Navigates real signup page on mindvideo.ai -> fills email, nickname, password
-# -> triggers Turnstile -> clicks Turnstile widget -> catches send-mail-code response -> fills OTP -> finishes registration.
+# Step 0: Input email -> Click Continue -> Turnstile appears -> Mouse click Turnstile iframe -> Wait for send-mail-code (200 OK)
+# Step 1: Mail.tm OTP read -> Input OTP -> Fill Password & Nickname -> Click Register -> Account saved.
 
 import asyncio
 import logging
@@ -33,7 +33,7 @@ USER_AGENT = (
 
 async def create_account_browser(index: int) -> dict:
     """
-    Automates the full registration on mindvideo.ai/auth/signup/
+    Automates the full native registration on mindvideo.ai/auth/signup/
     """
     # 1. Provision clean inbox via mail.tm
     email, _, mail_token = await mailtm.create_inbox()
@@ -54,7 +54,7 @@ async def create_account_browser(index: int) -> dict:
         )
         page = await context.new_page()
 
-        # Track network responses for debugging
+        # Track network responses for send-mail-code and register
         send_mail_result = {"status": None, "body": None}
 
         async def handle_response(response):
@@ -62,7 +62,7 @@ async def create_account_browser(index: int) -> dict:
                 try:
                     send_mail_result["status"] = response.status
                     send_mail_result["body"] = await response.text()
-                    logger.info(f"[{index}] Intercepted /api/send-mail-code response: {response.status} -> {send_mail_result['body']}")
+                    logger.info(f"[{index}] /api/send-mail-code: {response.status} -> {send_mail_result['body']}")
                 except Exception:
                     pass
 
@@ -72,78 +72,58 @@ async def create_account_browser(index: int) -> dict:
         await page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=45000)
         await asyncio.sleep(2)
 
-        # Step 0: Fill Email, Nickname, Password
-        logger.info(f"[{index}] Filling signup fields: email={email}, nickname={nickname}")
-        
-        # Email input
-        email_el = page.locator("input#email, input[placeholder*='email' i]").first
-        await email_el.wait_for(state="visible", timeout=15000)
-        await email_el.click()
-        await email_el.fill(email)
-        await asyncio.sleep(0.3)
+        # ── Step 0: Fill Email and Submit ─────────────────────────────────────
+        logger.info(f"[{index}] Filling email: {email}")
+        email_input = page.locator("input#email, input[placeholder*='email' i]").first
+        await email_input.wait_for(state="visible", timeout=15000)
+        await email_input.click()
+        await email_input.fill(email)
+        await page.keyboard.press("Tab")
+        await asyncio.sleep(0.5)
 
-        # Nickname input
-        nick_el = page.locator("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]").first
-        if await nick_el.count() > 0:
-            await nick_el.click()
-            await nick_el.fill(nickname)
-            await asyncio.sleep(0.3)
-
-        # Password input
-        pass_el = page.locator("input#password, input[type='password']").first
-        if await pass_el.count() > 0:
-            await pass_el.click()
-            await pass_el.fill(password)
-            await asyncio.sleep(0.3)
-
-        # Submit Step 0
-        logger.info(f"[{index}] Submitting Step 0 to open Turnstile...")
+        # Click Continue to open Turnstile
+        logger.info(f"[{index}] Clicking Continue button...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
         await submit_btn.click()
 
-        # Step 0 -> Solve Turnstile on Page
-        logger.info(f"[{index}] Watching for Turnstile widget...")
+        # ── Solve Turnstile Widget ────────────────────────────────────────────
+        logger.info(f"[{index}] Waiting for Turnstile iframe to render...")
         turnstile_passed = False
 
-        for attempt in range(30):
+        for attempt in range(40):
             await asyncio.sleep(1.0)
 
             # Check if send-mail-code succeeded (200 OK)
             if send_mail_result["status"] == 200:
-                logger.info(f"[{index}] ✅ /api/send-mail-code succeeded with 200 OK!")
+                logger.info(f"[{index}] ✅ send-mail-code succeeded with 200 OK!")
                 turnstile_passed = True
                 break
 
-            # Try clicking Turnstile checkbox inside iframe or container
+            # Find Turnstile iframe and simulate real mouse click on checkbox
             try:
-                # 1. Click turnstile iframe
-                iframe_el = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
-                body = iframe_el.locator("body, #challenge-stage, input[type='checkbox'], .ctp-checkbox-label").first
-                if await body.count() > 0:
-                    await body.click(timeout=1500)
-                    logger.info(f"[{index}] Clicked Turnstile checkbox (attempt {attempt+1})")
-            except Exception:
-                pass
+                iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com']")
+                if iframe_handle:
+                    box = await iframe_handle.bounding_box()
+                    if box and box["width"] > 0 and box["height"] > 0:
+                        # Click on the left checkbox area of the Turnstile widget
+                        click_x = box["x"] + 30
+                        click_y = box["y"] + box["height"] / 2
+                        await page.mouse.click(click_x, click_y)
+                        logger.info(f"[{index}] Mouse clicked Turnstile at ({int(click_x)}, {int(click_y)}) [attempt {attempt+1}]")
+            except Exception as e:
+                logger.debug(f"Click attempt failed: {e}")
 
-            # Also try clicking parent turnstile container
-            try:
-                t_container = page.locator("#turnstile-container, .cf-turnstile").first
-                if await t_container.count() > 0 and await t_container.is_visible():
-                    await t_container.click(timeout=1000)
-            except Exception:
-                pass
-
-            # Check if verification code input appeared
+            # Also check if verification code input appeared
             code_input = page.locator("input#verificationCode, input[placeholder*='code' i], input[placeholder*='verification' i]").first
             if await code_input.count() > 0 and await code_input.is_visible():
-                logger.info(f"[{index}] ✅ Verification code input is visible on screen!")
+                logger.info(f"[{index}] ✅ Verification code input appeared!")
                 turnstile_passed = True
                 break
 
         if not turnstile_passed:
-            raise RuntimeError(f"Turnstile did not complete. send-mail-code status: {send_mail_result}")
+            raise RuntimeError(f"Turnstile solve failed. send-mail-code: {send_mail_result}")
 
-        # Step 1: Read OTP from mail.tm
+        # ── Step 1: Read OTP from mail.tm ─────────────────────────────────────
         logger.info(f"[{index}] Polling mail.tm for OTP code...")
         otp_code = await mailtm.wait_for_otp(email, mail_token, timeout=90)
         logger.info(f"[{index}] Acquired OTP code: {otp_code}")
@@ -156,14 +136,27 @@ async def create_account_browser(index: int) -> dict:
         await code_input.fill(otp_code)
         await asyncio.sleep(0.5)
 
-        # Submit Step 1
+        # Fill Nickname and Password if present in Step 1
+        nick_el = page.locator("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]").first
+        if await nick_el.count() > 0 and await nick_el.is_visible():
+            await nick_el.click()
+            await nick_el.fill(nickname)
+            await asyncio.sleep(0.3)
+
+        pass_el = page.locator("input#password, input[type='password']").first
+        if await pass_el.count() > 0 and await pass_el.is_visible():
+            await pass_el.click()
+            await pass_el.fill(password)
+            await asyncio.sleep(0.3)
+
+        # Submit final Step
         logger.info(f"[{index}] Submitting final registration...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
         await submit_btn.click()
 
-        # Wait 3 seconds for registration request to complete
+        # Wait 3 seconds for registration to settle
         await asyncio.sleep(3.0)
-        logger.info(f"[{index}] ✅ Registration successfully completed for: {email}")
+        logger.info(f"[{index}] ✅ Registration complete for {email}")
 
         await browser.close()
 
