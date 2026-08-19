@@ -26,28 +26,15 @@ def set_active_page(page):
     global _active_page
     _active_page = page
 
-# Memory-optimized Chromium flags for 512MB constraint.
-# --single-process REMOVED — crashes when combined with --no-sandbox (Debian Chromium incompatibility).
-# Memory savings come from: --no-zygote, --disable-gpu, all background service disables, JS heap cap.
-# Expected footprint: ~260-320MB Chromium + ~70MB Python = ~330-390MB total — fits in 512MB.
+# Standard Chromium flags for Docker/Linux headless automation.
+# 1GB RAM environment — no memory hacks needed.
+# zendriver auto-adds: --no-sandbox (root), --headless=new, --remote-debugging-port, CDP flags.
 _CHROMIUM_ARGS = [
-    "--no-zygote",                             # no zygote fork — saves ~30MB in Docker
-    "--disable-dev-shm-usage",                 # use /tmp instead of /dev/shm (prevents 64MB shm OOM)
-    "--disable-gpu",                           # no GPU process — saves ~100MB
+    "--no-zygote",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
     "--disable-software-rasterizer",
     "--disable-extensions",
-    "--disable-default-apps",
-    "--disable-sync",
-    "--disable-translate",
-    "--disable-background-networking",
-    "--disable-background-timer-throttling",
-    "--disable-component-extensions-with-background-pages",
-    "--disable-hang-monitor",
-    "--disable-prompt-on-repost",
-    "--disable-client-side-phishing-detection",
-    "--metrics-recording-only",
-    "--safebrowsing-disable-auto-update",
-    "--js-flags=--max-old-space-size=128",     # cap V8 JS heap to 128MB
     "--window-size=1280,800",
     "--hide-scrollbars",
     "--mute-audio",

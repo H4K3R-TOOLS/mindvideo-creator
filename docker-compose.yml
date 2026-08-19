@@ -1,14 +1,17 @@
-version: "3.8"
+version: "3.9"
+
 services:
-  creator:
+  app:
     build: .
+    container_name: mindvideo-creator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
     environment:
-      - COUNT=1
+      - PORT=8000
       - THREADS=1
-      - HEADLESS=true
-      - LOG_LEVEL=INFO
       - OUTPUT_FILE=/app/accounts.txt
+      - LOG_LEVEL=INFO
     volumes:
-      - ./output:/app/output
-    # share display if running headful locally (Windows: skip this)
-    # shm_size: '256mb'
+      - ./accounts.txt:/app/accounts.txt
+    shm_size: "256mb"     # give Chromium proper shared memory — avoids /dev/shm OOM
