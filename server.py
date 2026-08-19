@@ -202,50 +202,17 @@ async function toggleAccounts() {
 </html>""".replace("SITEKEY_PLACEHOLDER", SITEKEY)
 
 
-# ── Account creation (Backend Automated) ────────────────────────────────────────
+from solver.flow import create_account_browser
+
+# ── Account creation (Full Browser Flow) ───────────────────────────────────────
 async def create_one(index: int) -> dict | None:
     async with _sem:
-        device_id = _random_device_id()
-        fvt       = _fvt_timestamp()
-        name      = _random_name()
-
         try:
-            # 1. Create clean inbox via mail.tm
-            email, _, token = await mailtm.create_inbox()
-            logger.info(f"[{index}] Starting → {email}")
-
-            # 2. Solve Turnstile & keep browser page open
-            logger.info(f"[{index}] Solving Turnstile (Backend Patchright)...")
-            cf_token, user_agent, page, cleanup = await turnstile.solve_with_page()
-            logger.info(f"[{index}] Turnstile solved ✅")
-
-            try:
-                # 3. Send OTP using in-browser fetch
-                logger.info(f"[{index}] Sending OTP to {email}...")
-                await send_otp(email, cf_token, page=page, user_agent=user_agent)
-                logger.info(f"[{index}] OTP sent → waiting for email...")
-
-                # 4. Read OTP & generate WASM i-sign concurrently
-                body_for_sign = {
-                    "email": email, "password": "", "verify_token": "", "name": name, "code": ""
-                }
-                otp_task  = asyncio.create_task(mailtm.wait_for_otp(email, token))
-                sign_task = asyncio.create_task(sign.generate(API_URL, body_for_sign))
-                otp, i_sign = await asyncio.gather(otp_task, sign_task)
-                logger.info(f"[{index}] OTP={otp} i-sign ready")
-
-                # 5. Register account using in-browser fetch
-                result = await register(
-                    email=email, otp=otp, i_sign=i_sign,
-                    device_id=device_id, fvt=fvt, name=name,
-                    user_agent=user_agent, page=page,
-                )
-                with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                    f.write(f"{result['email']}:{result['password']}\n")
-                logger.info(f"[{index}] ✅ Account created: {email}")
-                return result
-            finally:
-                await cleanup()
+            result = await create_account_browser(index)
+            with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{result['email']}:{result['password']}\n")
+            logger.info(f"[{index}] ✅ Account created: {result['email']}")
+            return result
         except Exception as e:
             logger.error(f"[{index}] ❌ Failed: {e}")
             _job_status["last_error"] = str(e)
