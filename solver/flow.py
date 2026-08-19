@@ -1,8 +1,8 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
+# - Single clean humanized click on Turnstile checkbox (avoids multi-click spam trigger)
 # - Real-time visual cursor overlay (red indicator visible on dashboard stream)
-# - Direct #turnstile-container bounding box coordinate clicking
-# - Real mouse dispatch + frame locator fallback
+# - Direct #turnstile-container coordinate click + patient verification wait
 
 import asyncio
 import logging
@@ -82,6 +82,10 @@ async def create_account_browser(index: int) -> dict:
         )
         page = await context.new_page()
 
+        # Pipe browser console & page errors for live monitoring
+        page.on("console", lambda msg: logger.info(f"[{index} Console] {msg.text}"))
+        page.on("pageerror", lambda err: logger.error(f"[{index} PageError] {err}"))
+
         # Track network responses for send-mail-code and register
         send_mail_result = {"status": None, "body": None}
 
@@ -140,10 +144,11 @@ async def create_account_browser(index: int) -> dict:
         await _save_screen(page)
 
         # ── Solve Turnstile Widget ────────────────────────────────────────────
-        logger.info(f"[{index}] Waiting for Turnstile widget to appear & clicking checkbox...")
+        logger.info(f"[{index}] Waiting for Turnstile widget to appear & clicking checkbox ONCE...")
         turnstile_passed = False
+        has_clicked_turnstile = False
 
-        for attempt in range(50):
+        for attempt in range(60):
             await asyncio.sleep(0.7)
 
             # Check if send-mail-code succeeded (200 OK)
@@ -159,47 +164,40 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # Method 1: Find Turnstile container or any iframe directly
-            clicked = False
-            try:
-                # Look for the container or iframe
-                targets = [
-                    await page.query_selector("#turnstile-container"),
-                    await page.query_selector("div.cf-turnstile"),
-                    await page.query_selector("iframe"),
-                ]
-                for target in targets:
-                    if target:
-                        box = await target.bounding_box()
-                        if box and box["width"] > 50 and box["height"] > 20:
-                            # Target the checkbox area (left side of the Turnstile container)
-                            click_x = box["x"] + 32
-                            click_y = box["y"] + box["height"] / 2
-                            
-                            # Show red cursor on screen
-                            await _save_screen(page, (click_x, click_y))
-                            
-                            # Smooth mouse move and click
-                            await page.mouse.move(click_x, click_y, steps=6)
-                            await page.mouse.down()
-                            await asyncio.sleep(0.08)
-                            await page.mouse.up()
-                            logger.info(f"[{index}] Dispatched mouse click at ({int(click_x)}, {int(click_y)}) on Turnstile box [attempt {attempt+1}]")
-                            clicked = True
-                            break
-            except Exception as e:
-                logger.debug(f"Coordinate click error: {e}")
-
-            # Method 2: Frame locator click fallback
-            try:
-                fl = page.frame_locator("iframe")
-                cb = fl.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
-                if await cb.count() > 0:
-                    await cb.click(timeout=800, force=True)
-            except Exception:
-                pass
-
-            if not clicked:
+            # ONLY CLICK ONCE when Turnstile appears (never spam click while Verifying...)
+            if not has_clicked_turnstile:
+                try:
+                    targets = [
+                        await page.query_selector("#turnstile-container"),
+                        await page.query_selector("div.cf-turnstile"),
+                        await page.query_selector("iframe"),
+                    ]
+                    for target in targets:
+                        if target:
+                            box = await target.bounding_box()
+                            if box and box["width"] > 50 and box["height"] > 20:
+                                # Target the checkbox area on the left
+                                click_x = box["x"] + 28
+                                click_y = box["y"] + box["height"] / 2
+                                
+                                # Move red cursor smoothly to checkbox
+                                await _save_screen(page, (click_x, click_y))
+                                await page.mouse.move(click_x, click_y, steps=8)
+                                await asyncio.sleep(0.1)
+                                
+                                # Dispatch single clean mouse click
+                                await page.mouse.down()
+                                await asyncio.sleep(0.08)
+                                await page.mouse.up()
+                                
+                                logger.info(f"[{index}] ✅ Clicked Turnstile checkbox ONCE at ({int(click_x)}, {int(click_y)}) — now waiting for verification...")
+                                has_clicked_turnstile = True
+                                await _save_screen(page, (click_x, click_y))
+                                break
+                except Exception as e:
+                    logger.debug(f"Click error: {e}")
+            else:
+                # While verifying, just update screenshot for live preview (do not click!)
                 await _save_screen(page)
 
         if not turnstile_passed:
