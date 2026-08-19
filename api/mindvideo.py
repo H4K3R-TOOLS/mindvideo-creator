@@ -57,17 +57,44 @@ def _random_name() -> str:
     return f"user{suffix}"
 
 
-async def send_otp(email: str, cf_token: str, user_agent: str | None = None) -> None:
+async def send_otp(email: str, cf_token: str, page=None, user_agent: str | None = None) -> None:
     """
     POST /api/send-mail-code
-    Triggers OTP email. No i-sign needed on this endpoint.
-    Raises httpx.HTTPStatusError on non-2xx.
+    Executes via browser page.evaluate fetch if page is provided (preserves CF session/TLS fingerprint).
     """
     payload = {
         "email":              email,
         "cf_challenge_token": cf_token,
         "type":               "register",
     }
+    
+    if page:
+        logger.info("Sending send-mail-code via in-browser fetch...")
+        res = await page.evaluate("""
+            async ({ url, payload }) => {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/plain, */*',
+                        'i-lang': 'en',
+                        'i-version': '1.0.8'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const text = await resp.text();
+                return { status: resp.status, text: text };
+            }
+        """, {"url": f"{API_BASE}/api/send-mail-code", "payload": payload})
+        
+        status = res.get("status")
+        text = res.get("text", "")
+        if status != 200:
+            logger.error(f"send_otp in-browser failed [{status}]: {text}")
+            raise httpx.HTTPStatusError(f"Status {status}: {text}", request=None, response=httpx.Response(status))
+        logger.info(f"OTP sent to {email} | status={status}")
+        return
+
     headers = {**_COMMON}
     if user_agent:
         headers["User-Agent"] = user_agent
@@ -93,11 +120,11 @@ async def register(
     name: str | None = None,
     password_raw: str | None = None,
     user_agent: str | None = None,
+    page=None,
 ) -> dict:
     """
     POST /api/register
     Returns parsed JSON response body on success (201).
-    Raises httpx.HTTPStatusError on non-2xx.
     """
     name = name or _random_name()
     raw_pw = password_raw or uuid.uuid4().hex
@@ -110,6 +137,47 @@ async def register(
         "name":         name,
         "code":         otp,
     }
+
+    if page:
+        logger.info("Sending register via in-browser fetch...")
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*',
+            'Device-Id': device_id,
+            'FVT': fvt,
+            'Referrer': 'https://www.mindvideo.ai/image-to-video/',
+            'Sub-Version': '5',
+            'UTM-Medium': 'unknow',
+            'UTM-Source': 'unknow',
+            'UTM-Term': 'unknow',
+            'i-lang': 'en',
+            'i-sign': i_sign,
+            'i-version': '1.0.8'
+        }
+        res = await page.evaluate("""
+            async ({ url, payload, headers }) => {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+                return { status: resp.status, data: data };
+            }
+        """, {"url": f"{API_BASE}/api/register", "payload": payload, "headers": headers})
+
+        status = res.get("status")
+        data = res.get("data", {})
+        if status not in (200, 201):
+            logger.error(f"register in-browser failed [{status}]: {data}")
+            raise httpx.HTTPStatusError(f"Status {status}: {data}", request=None, response=httpx.Response(status))
+        logger.info(f"Account created: {email} | status={status}")
+        return {
+            "email":    email,
+            "password": raw_pw,
+            "name":     name,
+            "response": data,
+        }
 
     headers = {
         **_COMMON,
@@ -135,7 +203,7 @@ async def register(
         logger.info(f"Account created: {email} | status={r.status_code}")
         return {
             "email":    email,
-            "password": raw_pw,        # plain text for accounts.txt
+            "password": raw_pw,
             "name":     name,
             "response": r.json(),
         }

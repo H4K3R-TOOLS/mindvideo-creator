@@ -43,70 +43,71 @@ USER_AGENT = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-async def solve(timeout_seconds: int = 60) -> tuple[str, str]:
+async def solve_with_page(timeout_seconds: int = 60):
     """
     Solves Cloudflare Turnstile purely in the backend using patchright.
-    Returns tuple: (token, user_agent)
+    Returns (token, user_agent, page, cleanup_callback)
     """
     logger.info("Launching backend patchright browser for Turnstile solve...")
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=HEADLESS,
-            args=_CHROMIUM_ARGS,
-        )
-        context = await browser.new_context(
-            user_agent=USER_AGENT,
-            locale="en-US",
-            viewport={"width": 1280, "height": 720},
-        )
-        page = await context.new_page()
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(
+        headless=HEADLESS,
+        args=_CHROMIUM_ARGS,
+    )
+    context = await browser.new_context(
+        user_agent=USER_AGENT,
+        locale="en-US",
+        viewport={"width": 1280, "height": 720},
+    )
+    page = await context.new_page()
 
-        # Build custom HTML with sitekey
-        page_html = HTML_TEMPLATE.format(sitekey=SITEKEY)
+    # Build custom HTML with sitekey
+    page_html = HTML_TEMPLATE.format(sitekey=SITEKEY)
 
-        # Route interception: fulfill domain URL directly with target HTML
-        await page.route(TARGET_URL, lambda route: route.fulfill(
-            status=200,
-            content_type="text/html",
-            body=page_html
-        ))
+    # Route interception: fulfill domain URL directly with target HTML
+    await page.route(TARGET_URL, lambda route: route.fulfill(
+        status=200,
+        content_type="text/html",
+        body=page_html
+    ))
 
-        logger.info(f"Navigating to intercepted route: {TARGET_URL}")
-        await page.goto(TARGET_URL, wait_until="domcontentloaded")
+    logger.info(f"Navigating to intercepted route: {TARGET_URL}")
+    await page.goto(TARGET_URL, wait_until="domcontentloaded")
 
-        # Poll and click loop
-        start_time = asyncio.get_event_loop().time()
-        attempts = 0
-        token = None
+    # Poll and click loop
+    start_time = asyncio.get_event_loop().time()
+    attempts = 0
+    token = None
 
-        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
-            attempts += 1
+    while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
+        attempts += 1
+        try:
+            val = await page.input_value("[name=cf-turnstile-response]")
+            if val and len(val) > 10:
+                token = val
+                logger.info(f"✅ Turnstile token acquired in {attempts} attempt(s): {token[:40]}...")
+                break
+        except Exception:
+            pass
+
+        try:
+            await page.click("//div[@class='cf-turnstile']", timeout=2000)
+        except Exception:
             try:
-                # Check if response element has token value
-                val = await page.input_value("[name=cf-turnstile-response]")
-                if val and len(val) > 10:
-                    token = val
-                    logger.info(f"✅ Turnstile token acquired in {attempts} attempt(s): {token[:40]}...")
-                    break
+                iframe = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
+                await iframe.locator("body").click(timeout=1500)
             except Exception:
                 pass
 
-            # Try clicking the turnstile checkbox widget
-            try:
-                await page.click("//div[@class='cf-turnstile']", timeout=2000)
-            except Exception:
-                # Fallback: try clicking iframe if div click didn't trigger
-                try:
-                    iframe = page.frame_locator("iframe[src*='challenges.cloudflare.com']")
-                    await iframe.locator("body").click(timeout=1500)
-                except Exception:
-                    pass
+        await asyncio.sleep(1.0)
 
-            await asyncio.sleep(1.0)
-
+    if not token:
         await browser.close()
+        await pw.stop()
+        raise TimeoutError(f"Turnstile solve failed after {timeout_seconds}s ({attempts} attempts)")
 
-        if not token:
-            raise TimeoutError(f"Turnstile solve failed after {timeout_seconds}s ({attempts} attempts)")
+    async def cleanup():
+        await browser.close()
+        await pw.stop()
 
-        return token, USER_AGENT
+    return token, USER_AGENT, page, cleanup
