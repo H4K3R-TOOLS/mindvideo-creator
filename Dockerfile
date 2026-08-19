@@ -43,10 +43,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install patchright Chromium binary as well
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN python -m patchright install chromium
-
 # ── App source ────────────────────────────────────────────────────────────────
 COPY . .
 
@@ -61,4 +57,5 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-CMD ["xvfb-run", "-a", "-s", "-screen 0 1280x800x24", "python", "server.py"]
+# Start Xvfb background display and start server
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -ac & export DISPLAY=:99 && python server.py"]
