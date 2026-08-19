@@ -1,9 +1,6 @@
 # Python 3.11 | server.py
-# Architecture:
-#   - Turnstile is solved CLIENT-SIDE (user's browser = residential IP = CF auto-solves)
-#   - Server receives the token, uses it for API calls
-#   - No patchright/browser needed on server → no datacenter IP issue
-#   - Dashboard embeds CF Turnstile widget, RUN button fires after token ready
+# Purpose: FastAPI web server — dashboard UI + HTTP API + live log streaming + live screenshot preview
+# Port: 8000
 
 import asyncio
 import logging
@@ -16,12 +13,13 @@ load_dotenv()
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, StreamingResponse, FileResponse, Response
 from pydantic import BaseModel
 
 from api.mindvideo        import send_otp, register, _random_device_id, _fvt_timestamp, _random_name
 from email_service         import mailtm
 from solver               import turnstile, sign
+from solver.flow          import create_account_browser
 
 PORT        = int(os.getenv("PORT", "8000"))
 THREADS     = int(os.getenv("THREADS", "1"))
@@ -43,7 +41,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("server")
 
-app = FastAPI(title="MindVideo Account Creator", version="2.0.0")
+app = FastAPI(title="MindVideo Account Creator", version="2.5.0")
 
 _sem = asyncio.Semaphore(THREADS)
 _job_status: dict = {
@@ -60,7 +58,6 @@ _DASHBOARD = """<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>MindVideo Creator</title>
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#0d0d0d;color:#e0e0e0;font-family:'Courier New',monospace;padding:24px}
@@ -82,16 +79,15 @@ _DASHBOARD = """<!DOCTYPE html>
   .stat span{color:#00ff88;font-weight:bold}
   .badge-run{color:#ffcc00}.badge-ok{color:#00ff88}.badge-fail{color:#ff4444}
   #log-box{background:#000;border:1px solid #1a1a1a;border-radius:6px;
-    height:420px;overflow-y:auto;padding:14px;font-size:12px;line-height:1.6;
+    height:380px;overflow-y:auto;padding:14px;font-size:12px;line-height:1.6;
     white-space:pre-wrap;word-break:break-all}
   .log-info{color:#aaa}.log-error{color:#ff5555}.log-warn{color:#ffaa00}.log-ok{color:#00ff88}.log-ts{color:#555}
   #accounts-box{display:none;background:#000;border:1px solid #1a1a1a;border-radius:6px;
     padding:14px;max-height:280px;overflow-y:auto;font-size:13px;margin-top:12px}
   .acc-line{color:#7eb6ff;padding:3px 0;border-bottom:1px solid #111}
   h2{font-size:13px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
-  #cf-wrap{margin-bottom:10px}
-  #token-status{font-size:12px;margin-top:6px}
-  .tok-ok{color:#00ff88}.tok-wait{color:#ffaa00}
+  .screen-wrap{background:#000;border:1px solid #222;border-radius:6px;padding:10px;text-align:center;min-height:200px}
+  #live-screen{max-width:100%;max-height:480px;border-radius:4px;border:1px solid #333;display:none}
 </style>
 </head>
 <body>
@@ -110,7 +106,6 @@ _DASHBOARD = """<!DOCTYPE html>
 
 <div class="card">
   <h2>Create Accounts</h2>
-
   <div class="row">
     <label>Count:</label>
     <input type="number" id="count" value="1" min="1" max="20"/>
@@ -118,6 +113,14 @@ _DASHBOARD = """<!DOCTYPE html>
     <button id="btn-accounts" onclick="toggleAccounts()">📋 ACCOUNTS</button>
   </div>
   <div id="accounts-box"></div>
+</div>
+
+<div class="card">
+  <h2>Live Browser View <span id="screen-ts" style="font-size:11px;color:#555"></span></h2>
+  <div class="screen-wrap">
+    <img id="live-screen" src="/screenshot?t=0" alt="Live View" onload="this.style.display='inline-block'" onerror="this.style.display='none'"/>
+    <div id="no-screen" style="color:#555;font-size:12px;padding:30px">Browser view will appear here when running...</div>
+  </div>
 </div>
 
 <div class="card">
@@ -154,6 +157,21 @@ function connectStream() {
   };
 }
 connectStream();
+
+// Auto-refresh live screenshot
+setInterval(() => {
+  const img = document.getElementById('live-screen');
+  const noScreen = document.getElementById('no-screen');
+  const newImg = new Image();
+  const src = '/screenshot?t=' + Date.now();
+  newImg.onload = () => {
+    img.src = src;
+    img.style.display = 'inline-block';
+    noScreen.style.display = 'none';
+    document.getElementById('screen-ts').textContent = '● updating';
+  };
+  newImg.src = src;
+}, 1500);
 
 async function pollHealth() {
   try {
@@ -199,10 +217,8 @@ async function toggleAccounts() {
 }
 </script>
 </body>
-</html>""".replace("SITEKEY_PLACEHOLDER", SITEKEY)
+</html>"""
 
-
-from solver.flow import create_account_browser
 
 # ── Account creation (Full Browser Flow) ───────────────────────────────────────
 async def create_one(index: int) -> dict | None:
@@ -238,6 +254,14 @@ async def run_batch(count: int) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return _DASHBOARD
+
+
+@app.get("/screenshot")
+async def get_screenshot():
+    screenshot_path = os.path.join(BASE_DIR, "screenshot.png")
+    if os.path.exists(screenshot_path):
+        return FileResponse(screenshot_path, media_type="image/png")
+    return Response(status_code=404)
 
 
 @app.get("/health")
