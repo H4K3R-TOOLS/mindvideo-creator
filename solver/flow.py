@@ -1,6 +1,8 @@
 # Python 3.11 | solver/flow.py
 # Full End-to-End Automated Browser Registration Flow
-# Real-time screenshot streaming + Humanized cursor movement & WebGL/Media fixes for Turnstile
+# - Real-time visual cursor overlay (red indicator visible on dashboard stream)
+# - Direct #turnstile-container bounding box coordinate clicking
+# - Real mouse dispatch + frame locator fallback
 
 import asyncio
 import logging
@@ -33,8 +35,23 @@ USER_AGENT = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-async def _save_screen(page):
+async def _save_screen(page, cursor_pos=None):
     try:
+        if cursor_pos:
+            x, y = cursor_pos
+            await page.evaluate(f"""
+                (() => {{
+                    let c = document.getElementById('_v_cursor');
+                    if (!c) {{
+                        c = document.createElement('div');
+                        c.id = '_v_cursor';
+                        c.style.cssText = 'position:fixed;width:14px;height:14px;background:#ff0055;border:2px solid #fff;border-radius:50%;z-index:9999999;pointer-events:none;box-shadow:0 0 8px #ff0055;';
+                        document.body.appendChild(c);
+                    }}
+                    c.style.left = '{x - 7}px';
+                    c.style.top = '{y - 7}px';
+                }})()
+            """)
         await page.screenshot(path=SCREENSHOT_PATH)
     except Exception:
         pass
@@ -88,18 +105,25 @@ async def create_account_browser(index: int) -> dict:
         
         email_input = page.locator("input#email, input[placeholder*='email' i]").first
         await email_input.wait_for(state="visible", timeout=15000)
+        e_box = await email_input.bounding_box()
+        if e_box:
+            await _save_screen(page, (e_box["x"] + 20, e_box["y"] + e_box["height"]/2))
         await email_input.click()
         await email_input.type(email, delay=15)
-        await _save_screen(page)
 
         nick_input = page.locator("input#nickname, input[placeholder*='nickname' i], input[placeholder*='name' i]").first
         await nick_input.wait_for(state="visible", timeout=10000)
+        n_box = await nick_input.bounding_box()
+        if n_box:
+            await _save_screen(page, (n_box["x"] + 20, n_box["y"] + n_box["height"]/2))
         await nick_input.click()
         await nick_input.type(nickname, delay=15)
-        await _save_screen(page)
 
         pass_input = page.locator("input#password, input[type='password']").first
         await pass_input.wait_for(state="visible", timeout=10000)
+        p_box = await pass_input.bounding_box()
+        if p_box:
+            await _save_screen(page, (p_box["x"] + 20, p_box["y"] + p_box["height"]/2))
         await pass_input.click()
         await pass_input.type(password, delay=15)
         await page.keyboard.press("Tab")
@@ -108,17 +132,19 @@ async def create_account_browser(index: int) -> dict:
         # Click Continue submit button
         logger.info(f"[{index}] Submitting Step 0 form...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
+        s_box = await submit_btn.bounding_box()
+        if s_box:
+            await _save_screen(page, (s_box["x"] + s_box["width"]/2, s_box["y"] + s_box["height"]/2))
         await submit_btn.click()
         await asyncio.sleep(0.5)
         await _save_screen(page)
 
         # ── Solve Turnstile Widget ────────────────────────────────────────────
-        logger.info(f"[{index}] Waiting for Turnstile widget to appear & solve...")
+        logger.info(f"[{index}] Waiting for Turnstile widget to appear & clicking checkbox...")
         turnstile_passed = False
 
         for attempt in range(50):
-            await asyncio.sleep(0.8)
-            await _save_screen(page)
+            await asyncio.sleep(0.7)
 
             # Check if send-mail-code succeeded (200 OK)
             if send_mail_result["status"] == 200:
@@ -133,32 +159,48 @@ async def create_account_browser(index: int) -> dict:
                 turnstile_passed = True
                 break
 
-            # 1. Target Turnstile iframe using frame_locator
+            # Method 1: Find Turnstile container or any iframe directly
+            clicked = False
             try:
-                frame = page.frame_locator("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']")
-                checkbox = frame.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
-                if await checkbox.count() > 0:
-                    await checkbox.click(timeout=1000, force=True)
-                    logger.info(f"[{index}] Clicked Turnstile checkbox inside frame [attempt {attempt+1}]")
+                # Look for the container or iframe
+                targets = [
+                    await page.query_selector("#turnstile-container"),
+                    await page.query_selector("div.cf-turnstile"),
+                    await page.query_selector("iframe"),
+                ]
+                for target in targets:
+                    if target:
+                        box = await target.bounding_box()
+                        if box and box["width"] > 50 and box["height"] > 20:
+                            # Target the checkbox area (left side of the Turnstile container)
+                            click_x = box["x"] + 32
+                            click_y = box["y"] + box["height"] / 2
+                            
+                            # Show red cursor on screen
+                            await _save_screen(page, (click_x, click_y))
+                            
+                            # Smooth mouse move and click
+                            await page.mouse.move(click_x, click_y, steps=6)
+                            await page.mouse.down()
+                            await asyncio.sleep(0.08)
+                            await page.mouse.up()
+                            logger.info(f"[{index}] Dispatched mouse click at ({int(click_x)}, {int(click_y)}) on Turnstile box [attempt {attempt+1}]")
+                            clicked = True
+                            break
+            except Exception as e:
+                logger.debug(f"Coordinate click error: {e}")
+
+            # Method 2: Frame locator click fallback
+            try:
+                fl = page.frame_locator("iframe")
+                cb = fl.locator("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body").first
+                if await cb.count() > 0:
+                    await cb.click(timeout=800, force=True)
             except Exception:
                 pass
 
-            # 2. Also simulate real human mouse cursor path to the checkbox
-            try:
-                iframe_handle = await page.query_selector("iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']")
-                if iframe_handle:
-                    box = await iframe_handle.bounding_box()
-                    if box and box["width"] > 0 and box["height"] > 0:
-                        target_x = box["x"] + 28
-                        target_y = box["y"] + box["height"] / 2
-                        # Move mouse smoothly in steps
-                        await page.mouse.move(target_x, target_y, steps=8)
-                        await page.mouse.down()
-                        await asyncio.sleep(0.08)
-                        await page.mouse.up()
-                        logger.info(f"[{index}] Mouse moved & clicked checkbox at ({int(target_x)}, {int(target_y)})")
-            except Exception:
-                pass
+            if not clicked:
+                await _save_screen(page)
 
         if not turnstile_passed:
             await _save_screen(page)
@@ -173,6 +215,9 @@ async def create_account_browser(index: int) -> dict:
         logger.info(f"[{index}] Entering verification code: {otp_code}...")
         code_input = page.locator("input#verificationCode, input[placeholder*='code' i], input[placeholder*='verification' i]").first
         await code_input.wait_for(state="visible", timeout=10000)
+        c_box = await code_input.bounding_box()
+        if c_box:
+            await _save_screen(page, (c_box["x"] + 20, c_box["y"] + c_box["height"]/2))
         await code_input.click()
         await code_input.type(otp_code, delay=20)
         await _save_screen(page)
@@ -181,6 +226,9 @@ async def create_account_browser(index: int) -> dict:
         # Submit final Step 1 (Register)
         logger.info(f"[{index}] Submitting final registration...")
         submit_btn = page.locator("button[type='submit'], .ant-btn").first
+        s_box = await submit_btn.bounding_box()
+        if s_box:
+            await _save_screen(page, (s_box["x"] + s_box["width"]/2, s_box["y"] + s_box["height"]/2))
         await submit_btn.click()
 
         # Wait 2.5 seconds for registration request to complete
